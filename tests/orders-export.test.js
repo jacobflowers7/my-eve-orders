@@ -1,0 +1,87 @@
+// tests/orders-export.test.js
+// buildOrdersExportPlan is pure — no SheetJS calls — so the export's layout
+// and formula strings are fully testable without loading the vendored library.
+const { run, check, summary } = require("./harness");
+
+(async () => {
+  const r = await run(`
+    return {
+      colLetters: [0, 1, 25, 26].map(xlsxColLetter),      // A, B, Z, AA
+      addr: xlsxAddr(0, 0),                                 // A1
+      addrRow5col6: xlsxAddr(5, 6),                          // G6
+      addrAbs: xlsxAddrAbs(2, 1),                            // $B$3
+    };
+  `);
+  check("col letters: 0→A, 1→B, 25→Z, 26→AA", JSON.stringify(r.colLetters) === '["A","B","Z","AA"]');
+  check("addr(0,0) is A1", r.addr === "A1");
+  check("addr(5,6) is G6", r.addrRow5col6 === "G6");
+  check("absolute addr uses $ on both parts", r.addrAbs === "$B$3");
+
+  const r2 = await run(`
+    const rules = { globalPct: 20, perItem: { 35: 50 } };
+    const fees  = { brokerFee: 0.03, salesTax: 0.03 };
+    const typeNames = { 34: "Tritanium", 35: "Pyerite" };
+    const locNames  = { 60003760: "Jita IV - Moon 4" };
+
+    const sell = { order_id: 1, type_id: 34, price: 130, volume_remain: 10, volume_total: 20,
+                   is_buy_order: false, location_id: 60003760, characterName: "Alpha" };
+    const buy  = { order_id: 2, type_id: 35, price: 90, volume_remain: 5, volume_total: 5,
+                   is_buy_order: true, location_id: 60003760, characterName: "Alpha" };
+    const noBasisSell = { order_id: 3, type_id: 34, price: 50, volume_remain: 1, volume_total: 1,
+                          is_buy_order: false, location_id: 60003760, characterName: "Beta" };
+
+    const rows = [
+      { o: sell, ref: 100, stationRef: 105, avgCost: 100, basisState: "known" },
+      { o: buy,  ref: 100, stationRef: null, avgCost: null, basisState: "unknown" },
+      { o: noBasisSell, ref: 100, stationRef: null, avgCost: null, basisState: "unknown" },
+    ];
+
+    const plan = buildOrdersExportPlan(rows, rules, fees, typeNames, locNames);
+    const byCell = (r, c) => plan.formulas.find(x => x.r === r && x.c === c);
+    return {
+      header: plan.aoa[4],
+      settingsRow: plan.aoa[2],
+      sellDataRow: plan.aoa[5],
+      buyDataRow: plan.aoa[6],
+      noBasisRow: plan.aoa[7],
+      // row 5 = sell (has global markup, no override) → markup formula present
+      sellMarkupFormula: byCell(5, 12),
+      // row 6 = buy with an override (type 35) → no markup formula, literal in AOA instead
+      buyMarkupFormula: byCell(6, 12),
+      sellTargetFormula: byCell(5, 13),
+      buyTargetFormula: byCell(6, 13),
+      sellMarginFormula: byCell(5, 16),
+      buyMarginFormula: byCell(6, 16),
+      noBasisMarginFormula: byCell(7, 16),
+      vsJitaFormula: byCell(5, 9),
+      vsStationFormula: byCell(5, 11),
+      deltaFormula: byCell(5, 14),
+      impactFormula: byCell(5, 15),
+    };
+  `);
+
+  check("header row matches the 17-column layout", JSON.stringify(r2.header) ===
+    JSON.stringify(["Character","Item","Side","Station","Qty Remain","Qty Total","Your Price",
+      "Avg Cost","Jita Ref","vs Jita %","Station Ref","vs Station %","Markup %",
+      "Target","Delta","Impact","Margin %"]));
+  check("settings row holds global markup and fees as percent values",
+        JSON.stringify(r2.settingsRow) === '["Global Markup %",20,"Broker Fee %",3,"Sales Tax %",3]');
+
+  check("sell row: static snapshot values", JSON.stringify(r2.sellDataRow.slice(0, 9)) ===
+    JSON.stringify(["Alpha", "Tritanium", "Sell", "Jita IV - Moon 4", 10, 20, 130, 100, 100]));
+  check("sell row: no per-item override → markup cell blank in AOA (formula fills it)", r2.sellDataRow[12] === "");
+  check("buy row: per-item override → literal 50 in AOA, no formula for that cell",
+        r2.buyDataRow[12] === 50 && r2.buyMarkupFormula === undefined);
+
+  check("sell markup formula references the global settings cell", r2.sellMarkupFormula.f === "$B$3");
+  check("sell target formula marks UP: ref*(1+markup/100)", r2.sellTargetFormula.f.includes("*(1+M6/100))"));
+  check("buy target formula marks DOWN: ref*(1-markup/100)", r2.buyTargetFormula.f.includes("*(1-M7/100))"));
+  check("sell margin (known basis) references fee cells", r2.sellMarginFormula.f.includes("$D$3") && r2.sellMarginFormula.f.includes("$F$3"));
+  check("buy margin needs no cost basis, just the reference", r2.buyMarginFormula.f === 'IF(I7="","",(I7-G7)/I7*100)');
+  check("no-basis sell gets a literal n/a, not a formula", r2.noBasisRow[16] === "n/a" && r2.noBasisMarginFormula === undefined);
+  check("vs Jita % formula is direction-agnostic (price vs ref)", r2.vsJitaFormula.f === 'IF(I6="","",(G6-I6)/I6*100)');
+  check("vs Station % formula references the station-ref column", r2.vsStationFormula.f.includes("K6"));
+  check("delta formula is target minus price", r2.deltaFormula.f === 'IF(N6="","",N6-G6)');
+  check("impact formula is abs(delta) times qty remain", r2.impactFormula.f === 'IF(O6="","",ABS(O6)*E6)');
+  summary("orders-export");
+})();
