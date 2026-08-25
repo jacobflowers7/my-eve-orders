@@ -62,6 +62,22 @@ const row = (txId, date, typeId, qty, price, isBuy) =>
       legacyMissingFlag: computeCostBasis([
         row(1, "2026-08-01", 43, 100, 10, true),
       ])[43],
+      // With the toggle ON, corp-funded buys pool into the average like any
+      // other buy — the one-person "buying corp as ISK source" setup.
+      corpToggled: (() => {
+        includeCorpBuys = true;
+        const out = {
+          mixed: computeCostBasis([
+            { ...row(1, "2026-08-01", 41, 100, 10, true), isPersonal: true },
+            { ...row(2, "2026-08-02", 41, 100, 90, true), isPersonal: false },
+          ])[41],
+          corpOnly: computeCostBasis([
+            { ...row(1, "2026-08-01", 42, 100, 10, true), isPersonal: false },
+          ])[42],
+        };
+        includeCorpBuys = false;   // don't leak into the assertions above on re-run
+        return out;
+      })(),
     };
   `);
 
@@ -78,5 +94,9 @@ const row = (txId, date, typeId, qty, price, isBuy) =>
   check("corp-only buy history leaves no personal basis", r.corpOnly === true);
   check("legacy rows without isPersonal still count as personal",
         r.legacyMissingFlag.unitsOnHand === 100 && r.legacyMissingFlag.avgCost === 10);
+  check("toggle on: corp buy pools into the average",
+        r.corpToggled.mixed.unitsOnHand === 200 && r.corpToggled.mixed.avgCost === 50);
+  check("toggle on: corp-only history now yields a basis",
+        r.corpToggled.corpOnly.unitsOnHand === 100 && r.corpToggled.corpOnly.avgCost === 10);
   summary("cost-basis");
 })();

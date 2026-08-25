@@ -63,7 +63,9 @@ The **Char** and **Station** column headers each carry a dropdown, populated fro
 
 Average cost is a **weighted average**, not FIFO, pooled across every character you've logged in. This is deliberate: once stock moves between your own characters (contracts, corp hangars), there's no way to trace which specific purchase a given unit of stock came from, so per-lot tracking would be unreliable in exactly the cases it's meant to help with.
 
-The wallet-transaction ledger only has data since you started using this tool (ESI only serves a rolling window of recent transactions, walked backward on each refresh). Items bought before that, or bought via a corporation wallet, show cost basis as **n/a** rather than a confidently wrong number.
+The wallet-transaction ledger only has data since you started using this tool (ESI only serves a rolling window of recent transactions, walked backward on each refresh). Items bought before that show cost basis as **n/a** rather than a confidently wrong number.
+
+**Corp-funded purchases** (buys paid from a corporation wallet) are excluded from the average by default, since shared corp stock pooled into a personal average would misstate it. If your corp is really just an ISK source — a one-person buying corp whose purchases land in your own hangar — turn on **Count corp-funded buys** in the Cost Basis section and they'll pool in like any personal buy (marked with a `corp` badge in the Avg Cost detail view). The data comes from the character-wallet scope you've already granted; no corp roles or extra scopes are needed, and the toggle takes effect immediately without a refresh.
 
 ## Tests
 

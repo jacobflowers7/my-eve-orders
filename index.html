@@ -304,6 +304,13 @@
   </div>
   </fieldset>
   <fieldset class="ctl-section">
+  <legend>Cost Basis</legend>
+  <div class="control-group">
+    <label for="corp-buys" title="Include purchases funded by a corporation wallet in your average cost. Turn this ON if your corp is just an ISK source and the bought items land in your own hangar (e.g. a one-person buying corp). Leave it OFF if corp-funded stock is shared with other members — pooling shared stock would misstate your personal average.">Count corp-funded buys</label>
+    <input type="checkbox" id="corp-buys" onchange="saveCorpBuysSetting()" style="width:auto;align-self:flex-start;margin-top:8px" />
+  </div>
+  </fieldset>
+  <fieldset class="ctl-section">
   <legend>Account</legend>
   <div class="control-group">
     <label title="Log in with your EVE Online account. Repeat for every character you want tracked — logging in again with the app already open adds a character, it doesn't replace the current one.">EVE SSO</label>
@@ -533,6 +540,23 @@ function loadFees() {
   const t = document.getElementById("sales-tax");
   if (b && Number.isFinite(saved.brokerFeePct)) b.value = saved.brokerFeePct;
   if (t && Number.isFinite(saved.salesTaxPct))  t.value = saved.salesTaxPct;
+}
+
+const CORP_BUYS_KEY = "myOrders.includeCorpBuys";
+
+function loadCorpBuysSetting() {
+  includeCorpBuys = localStorage.getItem(CORP_BUYS_KEY) === "1";
+  const cb = document.getElementById("corp-buys");
+  if (cb) cb.checked = includeCorpBuys;
+}
+
+function saveCorpBuysSetting() {
+  includeCorpBuys = !!document.getElementById("corp-buys")?.checked;
+  try { localStorage.setItem(CORP_BUYS_KEY, includeCorpBuys ? "1" : "0"); } catch {}
+  // The ledger already holds the corp rows — only the fold over it changes,
+  // so recompute in place rather than making the user hit Refresh.
+  ordersState.basis = computeCostBasis(ordersState.ledger);
+  renderOrdersTable();
 }
 
 function saveFees() {
@@ -1057,15 +1081,21 @@ async function syncAllWalletTx() {
 // ledger started mid-history: clamp at zero and flag partial so the UI shows a
 // badge instead of a confidently wrong number.
 
-// Corp-wallet rows (is_personal === false) are out of scope for this feature —
-// pooling them would silently corrupt the personal average. Rows persisted
-// before the field was tracked have no isPersonal at all: treat missing as
-// personal so existing local ledgers keep working.
-const isPersonalTx = r => r.isPersonal !== false;
+// Corp-wallet rows (is_personal === false) are excluded by DEFAULT — when a
+// corp's stock is genuinely shared among members, pooling corp-funded buys
+// into one person's average silently corrupts it. But a common trader setup
+// is a one-person corp used purely as an ISK source, where the bought items
+// land in the buyer's own hangar: there the corp-funded buy IS personal stock
+// acquisition, and excluding it leaves the basis n/a. The toggle covers that
+// case; it stays opt-in because only the player knows which setup theirs is.
+// Rows persisted before the field was tracked have no isPersonal at all:
+// treat missing as personal so existing local ledgers keep working.
+let includeCorpBuys = false;
+const basisEligibleTx = r => includeCorpBuys || r.isPersonal !== false;
 
 
 function computeCostBasis(rows) {
-  const personal = rows.filter(isPersonalTx);
+  const personal = rows.filter(basisEligibleTx);
   const sorted = [...personal].sort((a, b) =>
     a.date < b.date ? -1 : a.date > b.date ? 1 : a.transactionId - b.transactionId);
   const basis = {};
@@ -1087,8 +1117,8 @@ function computeCostBasis(rows) {
     }
   }
   // Types with only sells recorded carry no priceable history — drop them to Unknown.
-  // Built from the same personal-only view the fold used, so a corp-wallet buy
-  // never counts as buy history for a personal basis.
+  // Built from the same eligible-rows view the fold used, so an excluded
+  // corp-wallet buy never counts as buy history for a personal basis.
   const typesWithBuys = new Set(personal.filter(r => r.isBuy).map(r => r.typeId));
   for (const [t, b] of Object.entries(basis)) {
     if (!typesWithBuys.has(Number(t))) delete basis[t];
@@ -1105,7 +1135,7 @@ function computeCostBasis(rows) {
 // a lineage that doesn't exist. Mirrors that reset exactly, one type at a time.
 function contributingBuys(rows, typeId) {
   const sorted = rows
-    .filter(r => r.typeId === typeId && isPersonalTx(r) && r.quantity > 0)
+    .filter(r => r.typeId === typeId && basisEligibleTx(r) && r.quantity > 0)
     .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : a.transactionId - b.transactionId);
 
   let unitsOnHand = 0, active = [];
@@ -1573,11 +1603,14 @@ async function openCostBasisDetail(typeId) {
   const totalIsk = buys.reduce((s, r) => s + r.quantity * r.unitPrice, 0);
   const rows = buys.map(r => {
     const charName = ssoChars.find(c => c.characterId === r.characterId)?.characterName ?? `Character ${r.characterId}`;
+    const corpTag = r.isPersonal === false
+      ? ` <span style="color:var(--text-dim);font-size:9px;border:1px solid var(--border);border-radius:3px;padding:0 3px" title="Funded by a corporation wallet — included because 'Count corp-funded buys' is on">corp</span>`
+      : "";
     const station = stationNames[r.locationId] ?? `Location ${r.locationId}`;
     const date = new Date(r.date).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
     return `<tr>
       <td style="padding:4px 8px;font-size:11px">${escHtml(date)}</td>
-      <td style="padding:4px 8px;font-size:11px">${escHtml(charName)}</td>
+      <td style="padding:4px 8px;font-size:11px">${escHtml(charName)}${corpTag}</td>
       <td style="padding:4px 8px;font-size:11px">${escHtml(station)}</td>
       <td style="padding:4px 8px;font-size:11px;text-align:right">${fmt(r.quantity)}</td>
       <td style="padding:4px 8px;font-size:11px;text-align:right">${fmt(r.unitPrice)}</td>
@@ -1875,6 +1908,7 @@ function renderOrdersTable() {
   if (sc) structureRegistry = sc.data;
 
   loadFees();
+  loadCorpBuysSetting();
   loadSsoChars();
   updateSsoUI();
   await handleSsoCallback();
