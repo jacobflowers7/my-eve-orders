@@ -1655,6 +1655,14 @@ function renderOrdersTable() {
 // ── Startup ────────────────────────────────────────────────────────────────
 
 (async function init() {
+  // Opened directly from disk? Redirect to the local server (required for
+  // EVE SSO) whenever it's running; stay on file:// only if it isn't.
+  if (location.protocol === "file:") {
+    fetch("http://localhost:8080/", { mode: "no-cors" })
+      .then(() => location.replace("http://localhost:8080/"))
+      .catch(() => {});
+  }
+
   const sc = cacheLoad("structures");
   if (sc) structureRegistry = sc.data;
 
