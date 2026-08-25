@@ -531,10 +531,15 @@ function jwtPayload(jwt) {
 
 async function ssoLogin() {
   if (location.protocol === "file:") {
-    alert("SSO login can't work from a file:// page — EVE can't redirect back to it.\n\n" +
-          "Serve this folder over http(s) instead, e.g.:\n" +
-          "python3 -m http.server 8080\n" +
-          "then open http://localhost:8080/");
+    // file:// pages can't receive the SSO callback — hop to the local server.
+    try {
+      await fetch("http://localhost:8080/", { mode: "no-cors" });
+      location.href = "http://localhost:8080/";
+    } catch {
+      alert("The local web server isn't running, so SSO login isn't possible right now.\n\n" +
+            "Start it with:\n" +
+            "python3 -m http.server 8080 --directory ~/my_eve_orders");
+    }
     return;
   }
   if (!window.crypto?.subtle) {
