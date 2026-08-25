@@ -306,10 +306,8 @@
   <fieldset class="ctl-section">
   <legend>Account</legend>
   <div class="control-group">
-    <label title="Register an application at developers.eveonline.com with scopes esi-markets.read_character_orders.v1, esi-wallet.read_character_wallet.v1, esi-universe.read_structures.v1, esi-markets.structure_markets.v1, and a callback URL matching wherever you host this page. Then paste its Client ID here and log in — repeat for every character you want tracked.">EVE SSO</label>
+    <label title="Log in with your EVE Online account. Repeat for every character you want tracked — logging in again with the app already open adds a character, it doesn't replace the current one.">EVE SSO</label>
     <div id="sso-login-form" style="display:flex;gap:6px">
-      <input type="text" id="sso-client-id" placeholder="Client ID…" style="width:260px" autocomplete="off"
-             onchange="localStorage.setItem('myOrders.ssoClientId', this.value.trim())" />
       <button onclick="ssoLogin()" style="background:var(--bg3);color:var(--gold);border:1px solid var(--gold);padding:7px 12px;font-size:12px;letter-spacing:0.5px">Log In</button>
     </div>
     <span id="sso-char-list" style="display:none;align-items:center;gap:6px"></span>
@@ -453,6 +451,12 @@ const ORDERS_SCOPES = [ORDERS_SCOPE, WALLET_SCOPE];
 
 const SSO_SCOPES = [...ORDERS_SCOPES, STRUCTURE_SCOPE, MARKET_STRUCTURE_SCOPE].join(" ");
 
+// Not a secret — this is a PKCE public client, so nothing sensitive hinges on
+// this value being hidden (the code_verifier is what actually secures the
+// flow). Baked in so visitors can just click Log In; every visitor still
+// authenticates as their own EVE character regardless of which app this is.
+const SSO_CLIENT_ID = "a8c4e7b70a354f88aff1450511d531ea";
+
 
 // The scp claim is a string for one scope, an array for several.
 
@@ -577,13 +581,7 @@ async function ssoLogin() {
     alert("SSO login needs a secure context (http://localhost or https://) — file:// won't work.");
     return;
   }
-  const clientId = document.getElementById("sso-client-id").value.trim();
-  if (!clientId) {
-    alert("Enter your EVE application Client ID first.\n\nRegister one at developers.eveonline.com with callback URL " +
-          location.origin + location.pathname + " and the scopes:\n" + SSO_SCOPES);
-    return;
-  }
-  localStorage.setItem("myOrders.ssoClientId", clientId);
+  const clientId = SSO_CLIENT_ID;
   const verifier = b64urlBytes(crypto.getRandomValues(new Uint8Array(32)));
   const state    = b64urlBytes(crypto.getRandomValues(new Uint8Array(16)));
   localStorage.setItem("myOrders.ssoPending", JSON.stringify({ verifier, state, clientId }));
@@ -1878,8 +1876,6 @@ function renderOrdersTable() {
 
   loadFees();
   loadSsoChars();
-  const savedClientId = localStorage.getItem("myOrders.ssoClientId");
-  if (savedClientId) document.getElementById("sso-client-id").value = savedClientId;
   updateSsoUI();
   await handleSsoCallback();
 

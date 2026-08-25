@@ -23,18 +23,23 @@ python3 -m http.server 8080
 
 Then open `http://localhost:8080/`.
 
-## One-time setup: register an EVE application
+## Logging in
 
-1. Go to [developers.eveonline.com/applications](https://developers.eveonline.com/applications) and create a new application (or edit an existing one).
-2. Add these four scopes:
+Just click **Log In** — the EVE application Client ID is baked into `SSO_CLIENT_ID` near the top of the `<script>` in [index.html](index.html), so there's nothing to paste. Repeat for every character you want tracked; logging in again with the app already open adds a character, it doesn't replace the current one.
+
+A Client ID is a public identifier, not a secret — this app uses PKCE (no client secret involved), so embedding it is safe. Every visitor still authenticates as their own EVE character through EVE's own SSO login screen; nothing about who's logged in is shared between visitors. Each browser keeps its own signed-in characters (tokens included) in its own `localStorage`, isolated from everyone else who uses the page.
+
+### If you fork this or host your own copy
+
+Register your own application at [developers.eveonline.com/applications](https://developers.eveonline.com/applications):
+
+1. Add these four scopes:
    - `esi-markets.read_character_orders.v1`
    - `esi-wallet.read_character_wallet.v1`
    - `esi-universe.read_structures.v1`
    - `esi-markets.structure_markets.v1`
-3. Set the callback URL to wherever you're hosting this page (e.g. `http://localhost:8080/` for local use, or your real deployed URL).
-4. Paste the application's Client ID into the "EVE SSO" field in the app and click **Log In**. Repeat for every character you want tracked — logging in again with the app already open adds a character, it doesn't replace the current one.
-
-If you deploy this to a real domain later, add that URL as an additional callback on the same application (or register a second one) — the Client ID field has no default baked in, so you decide.
+2. Set the callback URL to exactly wherever you're hosting the page — including the trailing slash — since `redirect_uri` is computed from `location.origin + location.pathname` and EVE's SSO rejects any mismatch. Add every URL you'll open it from (e.g. both `http://localhost:8080/` for local dev and your real deployed URL) as separate callbacks on the same application.
+3. Replace the `SSO_CLIENT_ID` constant in `index.html` with your application's Client ID.
 
 ## The "vs Best %" column
 
