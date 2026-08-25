@@ -12,7 +12,6 @@ function doc() {
 (async () => {
   const d = doc();
   const r = await run(`
-    currentView = "orders";
     ssoChars = [{ characterId: 11, characterName: "Alpha", scopes: [] }];  // roster non-empty → table renders
     saveOrderRules({ globalPct: 20, perItem: {} });
     ordersState = {
@@ -93,7 +92,6 @@ function doc() {
   // Empty roster → login prompt, table hidden
   const d2 = doc();
   const r2 = await run(`
-    currentView = "orders";
     ordersState = { orders: [], basis: {}, books: {}, names: {}, typeNames: {}, warnings: [], loadedAt: null };
     ssoChars = [];
     renderOrdersTable();

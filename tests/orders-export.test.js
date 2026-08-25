@@ -77,6 +77,12 @@ const { run, check, summary } = require("./harness");
   check("sell target formula marks UP: ref*(1+markup/100)", r2.sellTargetFormula.f.includes("*(1+M6/100))"));
   check("buy target formula marks DOWN: ref*(1-markup/100)", r2.buyTargetFormula.f.includes("*(1-M7/100))"));
   check("sell margin (known basis) references fee cells", r2.sellMarginFormula.f.includes("$D$3") && r2.sellMarginFormula.f.includes("$F$3"));
+  // The sheet must blank the same cells the app blanks. deriveOrderRow suppresses
+  // sell margin when there's no Jita ref or a non-positive avg cost, so the
+  // formula has to guard the ref cell (I) and H<=0 — otherwise the export shows a
+  // margin the app itself reports as n/a, or #DIV/0! on a zero basis.
+  check("sell margin blanks when the Jita ref cell is empty", r2.sellMarginFormula.f.includes('I6=""'));
+  check("sell margin blanks on a non-positive avg cost", r2.sellMarginFormula.f.includes("H6<=0"));
   check("buy margin needs no cost basis, just the reference", r2.buyMarginFormula.f === 'IF(I7="","",(I7-G7)/I7*100)');
   check("no-basis sell gets a literal n/a, not a formula", r2.noBasisRow[16] === "n/a" && r2.noBasisMarginFormula === undefined);
   check("vs Jita % formula is direction-agnostic (price vs ref)", r2.vsJitaFormula.f === 'IF(I6="","",(G6-I6)/I6*100)');

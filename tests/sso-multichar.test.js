@@ -79,6 +79,39 @@ function jwt(payload) {
   check("failed record kept, marked stale", r3.stillThere === 3 && r3.stale === true);
   check("no refresh for the live record", tokenCalls === 2);
 
+  // 3b) Concurrent callers for the SAME character share one refresh request.
+  // EVE rotates refresh tokens — a second concurrent refresh would present the
+  // token the first one just invalidated and kill the session. refreshOrders now
+  // runs the orders fetch and the wallet sync in parallel, so this overlap is a
+  // normal occurrence, not a corner case.
+  const freshB = jwt({ sub: "CHARACTER:EVE:11", name: "Alpha", scp: [] });
+  let concurrentCalls = 0;
+  const fetch3b = async (url) => {
+    if (String(url).includes("login.eveonline.com")) {
+      concurrentCalls++;
+      await new Promise(res => setTimeout(res, 10));   // hold both callers in-flight
+      return { ok: true, json: async () => ({ access_token: freshB, refresh_token: "rotated", expires_in: 1200 }) };
+    }
+    return { ok: false, json: async () => null, headers: { get: () => "1" } };
+  };
+  const r3b = await run(`
+    ssoChars = [{ clientId: "cid", accessToken: "dead", refreshToken: "orig", expiresAt: 0,
+                  characterId: 11, characterName: "Alpha", scopes: [] }];
+    const [a, b] = await Promise.all([
+      getAccessTokenFor(ssoChars[0]),
+      getAccessTokenFor(ssoChars[0]),
+    ]);
+    // A later call must refresh again rather than reuse a settled promise.
+    ssoChars[0].expiresAt = 0;
+    const c = await getAccessTokenFor(ssoChars[0]);
+    return { same: a === b && a !== null, c: c !== null };
+  `, { fetch: fetch3b });
+  // 2 total = 1 shared by the concurrent pair + 1 for the later, separate refresh.
+  // Without dedup the pair would fire two, making 3.
+  check("concurrent refreshes for one character collapse to one token request", concurrentCalls === 2);
+  check("both concurrent callers get the same token", r3b.same === true);
+  check("in-flight entry is cleared so later refreshes still work", r3b.c === true);
+
   // 4) ssoLogout: removing an earlier, non-active character must not shift
   //    the active pointer onto a different survivor (regression: old code
   //    reused the pre-filter index against the post-filter array).

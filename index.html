@@ -112,52 +112,7 @@
     button:hover { opacity: 0.85; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-    /* ── Progress ── */
-    #progress-wrap {
-      padding: 10px 24px;
-      background: var(--bg2);
-      border-bottom: 1px solid var(--border);
-      display: none;
-    }
-    #progress-bar-bg {
-      background: var(--bg3);
-      border-radius: 2px;
-      height: 4px;
-      overflow: hidden;
-      margin-bottom: 6px;
-    }
-    #progress-bar {
-      background: linear-gradient(90deg, var(--teal), var(--gold));
-      height: 100%;
-      width: 0%;
-      transition: width 0.3s;
-      border-radius: 2px;
-    }
-    #progress-text { color: var(--text-dim); font-size: 11px; }
-
-    /* ── Stats bar ── */
-    #stats-bar {
-      padding: 8px 24px;
-      background: var(--bg2);
-      border-bottom: 1px solid var(--border);
-      display: none;
-      gap: 24px;
-      flex-wrap: wrap;
-    }
-    .stat { display: flex; flex-direction: column; gap: 2px; }
-    .stat-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.6px; }
-    .stat-value { font-size: 15px; font-weight: 600; color: var(--gold2); }
-
     /* ── Filters ── */
-    #filter-bar {
-      padding: 10px 24px;
-      background: var(--bg);
-      border-bottom: 1px solid var(--border);
-      display: none;
-      gap: 12px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
     .tab-btn {
       background: var(--bg3);
       color: var(--text-dim);
@@ -175,17 +130,6 @@
       border-color: var(--gold);
       color: var(--gold);
     }
-    #search-input {
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      color: var(--text);
-      padding: 4px 10px;
-      border-radius: 3px;
-      font-size: 12px;
-      width: 200px;
-      margin-left: auto;
-    }
-    #search-input:focus { outline: none; border-color: var(--gold); }
 
     /* ── Table ── */
     #table-wrap {
@@ -214,7 +158,7 @@
       user-select: none;
     }
     th:hover { color: var(--gold); }
-    th:focus-visible, .tree-label:focus-visible, .tree-leaf:focus-visible {
+    th:focus-visible {
       outline: 1px solid var(--gold);
       outline-offset: -1px;
     }
@@ -265,39 +209,6 @@
     /* ── Tooltip ── */
     [title] { cursor: help; }
 
-    /* ── Column visibility ── */
-    #results-table.hide-jita-sell  .col-jita-sell  { display: none; }
-    #results-table.hide-jita-buy   .col-jita-buy   { display: none; }
-    #results-table.hide-amarr-sell .col-amarr-sell { display: none; }
-    #results-table.hide-amarr-buy  .col-amarr-buy  { display: none; }
-    #gaps-table.hide-flat-cols   .col-gap-flat   { display: none; }
-    #gaps-table.hide-markup-cols .col-gap-markup { display: none; }
-    .col-min { color: var(--red); font-weight: 600; }
-    .new-badge {
-      color: var(--green);
-      border: 1px solid var(--green);
-      font-size: 9px;
-      font-weight: 700;
-      letter-spacing: 0.5px;
-      border-radius: 2px;
-      padding: 0 4px;
-      margin-right: 6px;
-      vertical-align: middle;
-    }
-
-    .scope-badge {
-      display: inline-block;
-      font-size: 9px;
-      font-weight: 700;
-      letter-spacing: 0.8px;
-      color: var(--teal);
-      background: rgba(74,184,200,0.1);
-      border: 1px solid rgba(74,184,200,0.3);
-      border-radius: 2px;
-      padding: 1px 5px;
-      margin-left: 6px;
-      vertical-align: middle;
-    }
     .drilldown-row {
       display: flex;
       flex-direction: column;
@@ -328,95 +239,20 @@
     .route-arrow { color: var(--gold); font-size: 16px; font-weight: bold; margin: 0 4px; }
     .route-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); }
 
-    /* ── Market tree sidebar ── */
-    #gap-tree-panel {
-      display: none;
-      width: 220px;
-      min-width: 180px;
-      max-height: calc(100vh - 260px);
-      overflow-y: auto;
-      border-right: 1px solid var(--border);
-      padding: 8px 0;
-      flex-shrink: 0;
-      background: var(--bg2);
-    }
-    #gap-tree-panel.visible { display: flex; flex-direction: column; }
     #table-content {
       flex: 1;
       min-width: 0;
       overflow-x: auto;
       padding: 0 24px 24px;
     }
-    .tree-group { border: none; }
-    .tree-group > summary {
-      list-style: none;
-      padding: 5px 10px 5px 14px;
-      cursor: pointer;
-      font-size: 11px;
-      color: var(--text-dim);
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      user-select: none;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .tree-group > summary::before { content: "▶"; font-size: 8px; margin-right: 4px; flex-shrink: 0; transition: transform 0.1s; }
-    .tree-group[open] > summary::before { transform: rotate(90deg); }
-    .tree-group > summary:hover { color: var(--text); background: var(--bg3); }
-    .tree-group > summary::-webkit-details-marker { display: none; }
-    .tree-group > summary::marker { display: none; }
-    .tree-label {
-      flex: 1; display: flex; align-items: center; gap: 4px;
-      padding: 1px 4px; border-radius: 2px;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    .tree-label:hover { background: var(--bg); color: var(--gold); }
-    .tree-active > summary .tree-label { color: var(--gold) !important; }
-    .tree-leaf {
-      padding: 4px 10px 4px 28px;
-      font-size: 11px;
-      cursor: pointer;
-      color: var(--text-dim);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-    .tree-leaf:hover { color: var(--text); background: var(--bg3); }
-    .tree-dim { opacity: 0.35; pointer-events: none; }
-    .tree-active > summary, .tree-active.tree-leaf { color: var(--gold) !important; background: #1a1500 !important; }
-    .tree-count {
-      margin-left: auto;
-      font-size: 10px;
-      color: var(--text-dim);
-      background: var(--bg3);
-      border-radius: 8px;
-      padding: 1px 5px;
-      flex-shrink: 0;
-    }
-    .tree-active .tree-count { color: var(--gold); }
 
     /* ── Shopping list ── */
-    .shop-add {
-      background: var(--bg3); color: var(--teal); border: 1px solid var(--border);
-      border-radius: 2px; width: 22px; height: 22px; padding: 0; font-size: 13px;
-      cursor: pointer; line-height: 1; text-transform: none; font-weight: normal; letter-spacing: 0;
-    }
-    .shop-add:hover { border-color: var(--teal); opacity: 1; }
-    .shop-add.added { color: var(--green); border-color: var(--green); }
-    .shop-add.added:hover { color: var(--red); border-color: var(--red); }
     .shop-input {
       background: var(--bg3); border: 1px solid var(--border); color: var(--text);
       padding: 3px 6px; border-radius: 2px; font-size: 12px; width: 110px;
       text-align: right; font-family: monospace;
     }
     .shop-input:focus { outline: none; border-color: var(--gold); }
-    .shop-avail { color: var(--gold2); font-size: 10px; white-space: nowrap; }
-    #shopping-table tfoot td { border-top: 2px solid var(--border); font-weight: 600; color: var(--gold2); padding: 10px 12px; }
   </style>
 </head>
 <body>
@@ -437,11 +273,11 @@
   <legend>Fees</legend>
   <div class="control-group">
     <label title="Used to net sell-order margins against your average cost">Broker Fee (%)</label>
-    <input type="number" id="broker-fee" value="3.0" min="0" max="10" step="0.1" onchange="renderOrdersTable()" />
+    <input type="number" id="broker-fee" value="3.0" min="0" max="10" step="0.1" onchange="saveFees()" />
   </div>
   <div class="control-group">
     <label title="Used to net sell-order margins against your average cost">Sales Tax (%)</label>
-    <input type="number" id="sales-tax" value="3.6" min="0" max="10" step="0.1" onchange="renderOrdersTable()" />
+    <input type="number" id="sales-tax" value="3.6" min="0" max="10" step="0.1" onchange="saveFees()" />
   </div>
   </fieldset>
   <fieldset class="ctl-section">
@@ -472,7 +308,6 @@
 </div>
 
 <div id="table-wrap">
-  <div id="gap-tree-panel"></div>
   <div id="table-content">
     <div id="msg">Log in with EVE SSO above, then click <strong>Refresh Orders</strong>.</div>
     <table id="orders-table" style="display:none">
@@ -568,8 +403,8 @@ function cacheSave(key, data, savedAt = Date.now()) {
 
 
 // ── EVE SSO (PKCE, public client — no secret) ────────────────────────────────
-// Unlocks /markets/structures/{id}/ for access-restricted structure markets,
-// structure name resolution, and structure search in the station picker.
+// Three scopes: read this character's market orders, read its wallet
+// transactions (the cost-basis ledger), and resolve player-structure names.
 const SSO_AUTH   = "https://login.eveonline.com/v2/oauth/authorize";
 
 const SSO_TOKEN  = "https://login.eveonline.com/v2/oauth/token";
@@ -578,11 +413,17 @@ const ORDERS_SCOPE  = "esi-markets.read_character_orders.v1";
 
 const WALLET_SCOPE  = "esi-wallet.read_character_wallet.v1";
 
+// Structure names degrade to "Player Structure (id)" without this one, so it's
+// deliberately not part of ORDERS_SCOPES — a character missing it still works.
+const STRUCTURE_SCOPE = "esi-universe.read_structures.v1";
+
+// The two scopes a character must have for its orders and cost basis to load.
 const ORDERS_SCOPES = [ORDERS_SCOPE, WALLET_SCOPE];
+
+const SSO_SCOPES = [...ORDERS_SCOPES, STRUCTURE_SCOPE].join(" ");
 
 
 // The scp claim is a string for one scope, an array for several.
-const SSO_SCOPES = [ORDERS_SCOPE, WALLET_SCOPE, "esi-universe.read_structures.v1"].join(" ");
 
 function scopesFromPayload(payload) {
   return Array.isArray(payload.scp) ? payload.scp : payload.scp ? [payload.scp] : [];
@@ -640,6 +481,33 @@ function currentFees() {
   const b = (parseFloat(document.getElementById("broker-fee")?.value) || 0) / 100;
   const t = (parseFloat(document.getElementById("sales-tax")?.value)  || 0) / 100;
   return { brokerFee: b, salesTax: t };
+}
+
+// Fee rates depend on the player's skills, standings and structure, so the
+// defaults in the markup are wrong for most people. They feed every margin
+// number (and the Excel export), so they must survive a reload the same way
+// the markup rules do — otherwise they silently snap back and quietly change
+// every figure on screen.
+const FEES_KEY = "myOrders.fees";
+
+function loadFees() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(FEES_KEY)); } catch {}
+  if (!saved) return;
+  const b = document.getElementById("broker-fee");
+  const t = document.getElementById("sales-tax");
+  if (b && Number.isFinite(saved.brokerFeePct)) b.value = saved.brokerFeePct;
+  if (t && Number.isFinite(saved.salesTaxPct))  t.value = saved.salesTaxPct;
+}
+
+function saveFees() {
+  const { brokerFee, salesTax } = currentFees();
+  try {
+    localStorage.setItem(FEES_KEY, JSON.stringify({
+      brokerFeePct: brokerFee * 100, salesTaxPct: salesTax * 100,
+    }));
+  } catch {}
+  renderOrdersTable();
 }
 
 
@@ -749,29 +617,47 @@ async function handleSsoCallback() {
 }
 
 
+// In-flight refresh per character. EVE rotates refresh tokens: each successful
+// refresh invalidates the token it was issued against, so two concurrent
+// refreshes for one character race and the loser kills the session. Callers
+// that overlap (orders and wallet sync now run in parallel) must share one
+// request rather than each firing their own.
+const refreshInFlight = new Map();
+
 async function getAccessTokenFor(rec) {
   if (!rec) return null;
   if (Date.now() < rec.expiresAt - 60_000) return rec.accessToken;
-  try {
-    const tok = await ssoTokenRequest({
-      grant_type: "refresh_token", refresh_token: rec.refreshToken, client_id: rec.clientId,
-    });
-    const payload = jwtPayload(tok.access_token);
-    rec.accessToken  = tok.access_token;
-    rec.refreshToken = tok.refresh_token;
-    rec.expiresAt    = Date.now() + (tok.expires_in ?? 1199) * 1000;
-    rec.scopes       = scopesFromPayload(payload);
-    delete rec.stale;
-    saveSsoChars();
-    updateSsoUI();
-    return rec.accessToken;
-  } catch (e) {
-    console.warn(`SSO refresh failed for ${rec.characterName}:`, e);
-    rec.stale = true;      // kept in the roster; UI prompts re-login
-    saveSsoChars();
-    updateSsoUI();
-    return null;
-  }
+
+  const pending = refreshInFlight.get(rec.characterId);
+  if (pending) return pending;
+
+  const attempt = (async () => {
+    try {
+      const tok = await ssoTokenRequest({
+        grant_type: "refresh_token", refresh_token: rec.refreshToken, client_id: rec.clientId,
+      });
+      const payload = jwtPayload(tok.access_token);
+      rec.accessToken  = tok.access_token;
+      rec.refreshToken = tok.refresh_token;
+      rec.expiresAt    = Date.now() + (tok.expires_in ?? 1199) * 1000;
+      rec.scopes       = scopesFromPayload(payload);
+      delete rec.stale;
+      saveSsoChars();
+      updateSsoUI();
+      return rec.accessToken;
+    } catch (e) {
+      console.warn(`SSO refresh failed for ${rec.characterName}:`, e);
+      rec.stale = true;      // kept in the roster; UI prompts re-login
+      saveSsoChars();
+      updateSsoUI();
+      return null;
+    } finally {
+      refreshInFlight.delete(rec.characterId);
+    }
+  })();
+
+  refreshInFlight.set(rec.characterId, attempt);
+  return attempt;
 }
 
 
@@ -842,10 +728,18 @@ async function fetchStructureInfoFor(rec, id) {
 async function resolveLocationNames(pairs) {
   const uniqueLocIds = [...new Set(pairs.map(p => p.locationId))];
   const structureIds = uniqueLocIds.filter(id => id >= 1_000_000_000_000 && !structureRegistry[id]);
-  await Promise.all(structureIds.map(id => {
-    const owner = pairs.find(p => p.locationId === id);
-    const rec = ssoChars.find(c => c.characterId === owner.characterId);
-    return rec ? fetchStructureInfoFor(rec, id) : null;
+  await Promise.all(structureIds.map(async id => {
+    // Every character with a pair here is a candidate, not just the first:
+    // access can lapse (corp change, war, structure sold) while an old order or
+    // wallet row survives, so the first candidate may be the one who *lost*
+    // docking rights while a later one still has them.
+    const candidates = [...new Set(pairs.filter(p => p.locationId === id).map(p => p.characterId))];
+    for (const characterId of candidates) {
+      const rec = ssoChars.find(c => c.characterId === characterId);
+      if (!rec) continue;
+      await fetchStructureInfoFor(rec, id);
+      if (structureRegistry[id]) return;   // resolved — stop burning requests
+    }
   }));
   const names = await resolveIds(uniqueLocIds);
   uniqueLocIds.forEach(id => {
@@ -1312,18 +1206,24 @@ async function fetchCharacterOrders(rec) {
 }
 
 
+// Characters are fetched concurrently: each holds its own token, so there is no
+// shared state to race on. Results are reassembled in roster order so the table
+// doesn't reshuffle between refreshes.
 async function fetchAllCharacterOrders() {
-  const orders = [];
   const warnings = [];
-  for (const rec of ssoChars) {
-    if (!charHasScope(rec, ORDERS_SCOPE)) {
-      warnings.push(`${rec.characterName}: missing orders scope — log in again`);
-      continue;
-    }
-    const rows = await fetchCharacterOrders(rec);
-    if (rows === null) { warnings.push(`${rec.characterName}: session expired — log in again`); continue; }
+  const eligible = ssoChars.filter(rec => {
+    if (charHasScope(rec, ORDERS_SCOPE)) return true;
+    warnings.push(`${rec.characterName}: missing orders scope — log in again`);
+    return false;
+  });
+
+  const perChar = await Promise.all(eligible.map(rec => fetchCharacterOrders(rec)));
+
+  const orders = [];
+  perChar.forEach((rows, i) => {
+    if (rows === null) { warnings.push(`${eligible[i].characterName}: session expired — log in again`); return; }
     orders.push(...rows);
-  }
+  });
   return { orders, warnings };
 }
 
@@ -1394,15 +1294,21 @@ async function refreshOrders() {
   const btn = document.getElementById("orders-refresh-btn");
   if (btn) { btn.disabled = true; btn.textContent = "⏳ Refreshing…"; }
   try {
-    const { orders, warnings: ow } = await fetchAllCharacterOrders();
-    const { ledger, warnings: ww } = await syncAllWalletTx();
+    // Orders and wallet history are independent; refresh-token races between
+    // them are prevented by the in-flight dedup in getAccessTokenFor.
+    const [{ orders, warnings: ow }, { ledger, warnings: ww }] =
+      await Promise.all([fetchAllCharacterOrders(), syncAllWalletTx()]);
+
+    // Everything below only needs `orders`, and none of the four depend on each
+    // other — one round trip instead of four.
     const typeIds = [...new Set(orders.map(o => o.type_id))];
-    const books = await fetchJitaBooksForTypes(typeIds);
-    const regionBooks = await fetchRegionBooksForPairs(
-      orders.map(o => ({ regionId: o.region_id, typeId: o.type_id })));
-    const names = await resolveLocationNames(
-      orders.map(o => ({ locationId: o.location_id, characterId: o.characterId })));
-    Object.assign(names, await resolveIds(typeIds));
+    const [books, regionBooks, locationNames, typeNameIds] = await Promise.all([
+      fetchJitaBooksForTypes(typeIds),
+      fetchRegionBooksForPairs(orders.map(o => ({ regionId: o.region_id, typeId: o.type_id }))),
+      resolveLocationNames(orders.map(o => ({ locationId: o.location_id, characterId: o.characterId }))),
+      resolveIds(typeIds),
+    ]);
+    const names = Object.assign(locationNames, typeNameIds);
     ordersState = {
       orders,
       basis: computeCostBasis(ledger),
@@ -1465,7 +1371,14 @@ async function copyOrderPrice(value, el) {
 }
 
 
+// Bumped on every open and on close. The station-name lookup below is async and
+// the table behind the modal stays clickable, so a slow first request could
+// otherwise repaint the body after a second item was already rendered — leaving
+// one item's title above another item's transactions.
+let costBasisDetailGen = 0;
+
 async function openCostBasisDetail(typeId) {
+  const gen = ++costBasisDetailGen;
   const buys = contributingBuys(ordersState.ledger, typeId)
     .sort((a, b) => b.date < a.date ? -1 : b.date > a.date ? 1 : 0); // most recent first
   const title = document.getElementById("cost-basis-modal-title");
@@ -1481,6 +1394,7 @@ async function openCostBasisDetail(typeId) {
   body.innerHTML = `<p style="color:var(--text-dim);font-size:11px">Loading purchase stations…</p>`;
   const stationNames = await resolveLocationNames(
     buys.map(b => ({ locationId: b.locationId, characterId: b.characterId })));
+  if (gen !== costBasisDetailGen) return;  // superseded by a newer open, or closed
 
   const totalQty = buys.reduce((s, r) => s + r.quantity, 0);
   const totalIsk = buys.reduce((s, r) => s + r.quantity * r.unitPrice, 0);
@@ -1515,6 +1429,7 @@ async function openCostBasisDetail(typeId) {
 
 
 function closeCostBasisDetail() {
+  costBasisDetailGen++;   // discard any in-flight render for the closed modal
   document.getElementById("cost-basis-modal").style.display = "none";
 }
 
@@ -1601,8 +1516,12 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
     if (o.is_buy_order) {
       formulas.push({ r, c: 16, f: `IF(${I}="","",(${I}-${G})/${I}*100)` });
     } else if (row.basisState === "known") {
+      // Guard the Jita Ref cell and a non-positive avg cost too, so the sheet
+      // blanks exactly where deriveOrderRow's gate does. Without the I guard, a
+      // sell order with no Jita book shows a margin in Excel that the app itself
+      // reports as n/a; without the H guard a zero cost basis yields #DIV/0!.
       formulas.push({ r, c: 16,
-        f: `IF(OR(${G}="",${H}=""),"",((${G}*(1-${brokerFeeAddr}/100-${salesTaxAddr}/100))-${H})/${H}*100)` });
+        f: `IF(OR(${G}="",${H}="",${H}<=0,${I}=""),"",((${G}*(1-${brokerFeeAddr}/100-${salesTaxAddr}/100))-${H})/${H}*100)` });
     } else {
       aoa[r][16] = "n/a";
     }
@@ -1636,7 +1555,7 @@ function exportOrdersToExcel() {
 function renderOrdersTable() {
   const tbody = document.getElementById("orders-tbody");
   const table = document.getElementById("orders-table");
-  if (!tbody || currentView !== "orders") return;
+  if (!tbody) return;
   const msg = document.getElementById("msg");
 
   const rules = loadOrderRules();   // read once — used for the input default and every row
@@ -1644,6 +1563,13 @@ function renderOrdersTable() {
   if (gm && gm.value === "") gm.value = rules.globalPct;
   const warn = document.getElementById("orders-warnings");
   if (warn) warn.innerHTML = ordersState.warnings.map(escHtml).join(" · ");
+
+  // Prices go stale fast; without a timestamp there's no way to tell a fresh
+  // table from one left open overnight.
+  const stamp = document.getElementById("last-updated");
+  if (stamp) stamp.textContent = ordersState.loadedAt
+    ? new Date(ordersState.loadedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : "—";
 
   if (!ssoChars.length) {
     table.style.display = "none";
@@ -1722,17 +1648,30 @@ function renderOrdersTable() {
 }
 
 // ── Startup ────────────────────────────────────────────────────────────────
-let currentView = "orders"; // this tool has exactly one view
 
 (async function init() {
   const sc = cacheLoad("structures");
   if (sc) structureRegistry = sc.data;
 
+  loadFees();
   loadSsoChars();
   const savedClientId = localStorage.getItem("myOrders.ssoClientId");
   if (savedClientId) document.getElementById("sso-client-id").value = savedClientId;
   updateSsoUI();
   await handleSsoCallback();
+
+  // Sortable headers are <th onclick>, which browsers don't focus or activate
+  // from the keyboard on their own — make them real buttons for keyboard and
+  // screen-reader users.
+  document.querySelectorAll("th[onclick]").forEach(th => {
+    th.setAttribute?.("tabindex", "0");
+    th.setAttribute?.("role", "button");
+  });
+  document.addEventListener?.("keydown", e => {
+    if (e.key === "Escape") { closeCostBasisDetail(); return; }
+    if (e.key !== "Enter" && e.key !== " ") return;
+    if (e.target?.matches?.("th[onclick]")) { e.preventDefault(); e.target.click(); }
+  });
 
   renderOrdersTable();
 })();
