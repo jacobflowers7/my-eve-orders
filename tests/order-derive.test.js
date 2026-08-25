@@ -25,11 +25,14 @@ const { run, check, summary } = require("./harness");
       belowRef: deriveOrderRow({ ...sell, price: 90 }, basis, 100, rules, fees),
       // bestRef is the 6th positional param that ref/basis math doesn't touch —
       // must be independent of, and not confused with, the Jita ref (100 here)
-      beaten:     deriveOrderRow(sell, basis, 100, rules, fees, 110),
-      sellAtBest: deriveOrderRow(sell, basis, 100, rules, fees, 130),   // our own price IS the best
-      buyAtBest:  deriveOrderRow({ ...buy, price: 130 }, basis, 100, rules, fees, 130),
-      buyOutbid:  deriveOrderRow({ ...buy, price: 130 }, basis, 100, rules, fees, 140),
-      noBestRef:  deriveOrderRow(sell, basis, 100, rules, fees, null),
+      beaten:     deriveOrderRow(sell, basis, 100, rules, fees, 110, 3),
+      sellAtBest: deriveOrderRow(sell, basis, 100, rules, fees, 130, 2),   // best, but tied against a real rival
+      buyAtBest:  deriveOrderRow({ ...buy, price: 130 }, basis, 100, rules, fees, 130, 2),
+      buyOutbid:  deriveOrderRow({ ...buy, price: 130 }, basis, 100, rules, fees, 140, 2),
+      noBestRef:  deriveOrderRow(sell, basis, 100, rules, fees, null, null),
+      // soloAtStation === 1: nobody else is listed there at all
+      soloSell:   deriveOrderRow(sell, basis, 100, rules, fees, 130, 1),
+      soloBuy:    deriveOrderRow({ ...buy, price: 130 }, basis, 100, rules, fees, 130, 1),
     };
   `);
 
@@ -72,5 +75,13 @@ const { run, check, summary } = require("./harness");
   check("vsBestPct: sells never read negative (best is <= our price)", r.beaten.vsBestPct > 0);
   check("vsBestPct: null when bestRef missing (station book unreadable)", r.noBestRef.vsBestPct === null);
   check("vsBestPct: omitted bestRef arg is also null, doesn't crash", r.sellRow.vsBestPct === null);
+
+  // isSolo: distinguishes "best against nobody" from "best against real rivals"
+  check("isSolo: true only when exactly one order (ours) sits at the station", r.soloSell.isSolo === true);
+  check("isSolo: true for a solo buy order too", r.soloBuy.isSolo === true);
+  check("isSolo: false when tied for best against a real competitor", r.sellAtBest.isSolo === false);
+  check("isSolo: false when beaten (not the best at all)", r.beaten.isSolo === false);
+  check("isSolo: false when bestRef is missing entirely (book unreadable)", r.noBestRef.isSolo === false);
+  check("isSolo: false when soloAtStation arg is omitted, doesn't crash", r.sellRow.isSolo === false);
   summary("order-derive");
 })();

@@ -236,6 +236,29 @@
       background-position: right 7px center;
     }
     .route-select:focus { outline: none; border-color: var(--gold); }
+
+    /* ── Column header filters (My Orders table) ── */
+    .col-filter-select {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-size: 10px;
+      font-weight: normal;
+      text-transform: none;
+      letter-spacing: normal;
+      padding: 2px 16px 2px 4px;
+      border-radius: 2px;
+      margin-top: 3px;
+      max-width: 110px;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23667080'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 5px center;
+    }
+    .col-filter-select:focus { outline: none; border-color: var(--gold); }
+    .col-filter-select.active { border-color: var(--gold); color: var(--gold2); }
     .route-arrow { color: var(--gold); font-size: 16px; font-weight: bold; margin: 0 4px; }
     .route-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); }
 
@@ -313,15 +336,15 @@
     <table id="orders-table" style="display:none">
     <thead>
       <tr>
-        <th onclick="setOrdersSort('character')">Char</th>
+        <th onclick="setOrdersSort('character')">Char<br><span id="orders-filter-character" onclick="event.stopPropagation()"></span></th>
         <th onclick="setOrdersSort('name')">Item</th>
-        <th onclick="setOrdersSort('station')">Station</th>
+        <th onclick="setOrdersSort('station')">Station<br><span id="orders-filter-station" onclick="event.stopPropagation()"></span></th>
         <th class="col-num" onclick="setOrdersSort('qty')" title="Volume remaining / total">Qty</th>
         <th class="col-num" onclick="setOrdersSort('price')">Your Price</th>
         <th class="col-num" onclick="setOrdersSort('avgCost')" title="Weighted-average price paid, pooled across all characters">Avg Cost</th>
         <th class="col-num" onclick="setOrdersSort('ref')" title="Jita 4-4 volume-weighted 5% split">Jita Ref</th>
         <th class="col-num" onclick="setOrdersSort('vsJita')" title="Your current posted price vs the Jita reference, right now — (price − ref) / ref × 100. Positive = priced above Jita. No cost-basis needed, so this stays populated even when Margin % is n/a.">vs Jita %</th>
-        <th class="col-num" onclick="setOrdersSort('vsBest')" title="Your price vs the BEST live offer on your own side (lowest sell / highest buy) at this exact station right now. 0% means nothing has beaten you — you hold the best price, or are tied for it. Sells read positive (how far above the cheapest you are), buys negative (how far below the top bid). Blank only when the station's book can't be read at all.">vs Best %</th>
+        <th class="col-num" onclick="setOrdersSort('vsBest')" title="Your price vs the BEST live offer on your own side (lowest sell / highest buy) at this exact station right now. 0% means you're tied for the best price against real competitors; &quot;solo&quot; means nobody else is even listed there. Sells read positive (how far above the cheapest you are), buys negative (how far below the top bid). Blank only when the station's book can't be read at all.">vs Best %</th>
         <th class="col-num" title="Per-item markup % — blank uses the global rule">Markup %</th>
         <th class="col-num" onclick="setOrdersSort('target')" title="Ref × (1±markup). Click a value to copy it">Target</th>
         <th class="col-num" onclick="setOrdersSort('delta')" title="Target − your price: the amount to adjust your price by to hit Target. Click to copy">Δ Price</th>
@@ -1291,6 +1314,19 @@ function stationBestRef(regionBooks, order) {
 }
 
 
+// How many live orders (ours included) sit on this order's own side at this
+// order's own station. Distinct from stationBestRef: holding the best price
+// with a count of 1 means nobody else is even listed there ("solo"), while a
+// count > 1 means we're the best against real, visible competition — two
+// states a trader wants to tell apart even though both land on 0% by price.
+function stationOfferCount(regionBooks, order) {
+  const book = regionBooks[order.region_id]?.[order.type_id];
+  if (!book) return null;
+  const side = order.is_buy_order ? book.buy : book.sell;
+  return side.filter(o => o.locationId === order.location_id).length;
+}
+
+
 async function fetchCharacterOrders(rec) {
   const token = await getAccessTokenFor(rec);
   if (!token) return null;
@@ -1355,7 +1391,7 @@ function resolveMarkupPct(rules, typeId) {
 // The one place margin math lives. Sell margins are net of broker fee + sales
 // tax against pooled avg cost; buy "margin" is distance under the reference
 // (no basis involved — a buy order is acquisition, not liquidation).
-function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef) {
+function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef, soloAtStation) {
   const markupPct = resolveMarkupPct(rules, order.type_id);
   const m = markupPct / 100;
   const avgCost = basisEntry?.avgCost ?? null;
@@ -1384,7 +1420,13 @@ function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef) {
   // either way, further from zero is worse.
   const vsBestPct = bestRef != null && bestRef > 0 ? (order.price - bestRef) / bestRef * 100 : null;
 
-  return { target, delta, impact, marginPct, vsJitaPct, vsBestPct, avgCost, basisState, markupPct };
+  // "Solo" is a distinct state from "beat everyone": it means nobody else is
+  // even listed at this station on this side, so 0% would overstate what was
+  // actually accomplished. Only meaningful once we know the book at all —
+  // soloAtStation is undefined/null when bestRef itself is null.
+  const isSolo = bestRef != null && soloAtStation === 1;
+
+  return { target, delta, impact, marginPct, vsJitaPct, vsBestPct, isSolo, avgCost, basisState, markupPct };
 }
 
 
@@ -1392,6 +1434,27 @@ function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef) {
 let ordersState = { orders: [], basis: {}, books: {}, regionBooks: {}, names: {}, typeNames: {}, warnings: [], loadedAt: null, ledger: [] };
 
 let ordersSortKey = "impact", ordersSortAsc = false;
+
+// "" = no filter (show all). Values are stored as strings since that's what a
+// <select>'s .value always is, so comparisons below coerce both sides.
+let ordersFilterCharacterId = "";
+let ordersFilterStationId = "";
+
+function setOrdersFilter(kind, value) {
+  if (kind === "character") ordersFilterCharacterId = value;
+  else if (kind === "station") ordersFilterStationId = value;
+  renderOrdersTable();
+}
+
+// One <select> covering both header filters — same option-building and
+// selected/reset logic, just a different id field and label source.
+function ordersFilterSelectHtml(id, label, options, selectedId) {
+  const opts = [`<option value="">All ${escHtml(label)}</option>`]
+    .concat(options.map(([optId, optLabel]) =>
+      `<option value="${escHtml(String(optId))}"${String(optId) === String(selectedId) ? " selected" : ""}>${escHtml(optLabel)}</option>`));
+  return `<select class="col-filter-select${selectedId ? " active" : ""}" onchange="setOrdersFilter('${id}', this.value)"
+            title="Filter by ${escHtml(label)}">${opts.join("")}</select>`;
+}
 
 
 async function refreshOrders() {
@@ -1445,7 +1508,8 @@ function orderRowView(o, rules, fees) {
   const book  = ordersState.books[o.type_id] ?? { sell: [], buy: [] };
   const ref   = jitaRefPrice(book.sell, book.buy);
   const bestRef = stationBestRef(ordersState.regionBooks ?? {}, o);
-  const d     = deriveOrderRow(o, ordersState.basis[o.type_id], ref, rules, fees, bestRef);
+  const soloAtStation = stationOfferCount(ordersState.regionBooks ?? {}, o);
+  const d     = deriveOrderRow(o, ordersState.basis[o.type_id], ref, rules, fees, bestRef, soloAtStation);
   return { o, ref, bestRef, ...d };
 }
 
@@ -1697,8 +1761,33 @@ function renderOrdersTable() {
     return;
   }
 
+  // Filter dropdowns are built from the FULL unfiltered order list, so
+  // switching the character filter doesn't shrink the station filter's own
+  // options (and vice versa) — the two filters stay independent of each other.
+  const charOptions = [...new Map(ordersState.orders.map(o => [o.characterId, o.characterName])).entries()]
+    .sort((a, b) => a[1].localeCompare(b[1]));
+  const stationOptions = [...new Map(ordersState.orders.map(o =>
+      [o.location_id, ordersState.names[o.location_id] ?? `Location ${o.location_id}`])).entries()]
+    .sort((a, b) => a[1].localeCompare(b[1]));
+
+  // A previously-selected character/station can vanish on refresh (character
+  // logged out, order closed) — fall back to "All" rather than silently
+  // filtering to zero rows with no visible indication why.
+  if (ordersFilterCharacterId && !charOptions.some(([id]) => String(id) === ordersFilterCharacterId))
+    ordersFilterCharacterId = "";
+  if (ordersFilterStationId && !stationOptions.some(([id]) => String(id) === ordersFilterStationId))
+    ordersFilterStationId = "";
+
+  const charFilterEl = document.getElementById("orders-filter-character");
+  if (charFilterEl) charFilterEl.innerHTML = ordersFilterSelectHtml("character", "Characters", charOptions, ordersFilterCharacterId);
+  const stationFilterEl = document.getElementById("orders-filter-station");
+  if (stationFilterEl) stationFilterEl.innerHTML = ordersFilterSelectHtml("station", "Stations", stationOptions, ordersFilterStationId);
+
   const fees = currentFees();
-  const rows = ordersState.orders.map(o => orderRowView(o, rules, fees));
+  const filteredOrders = ordersState.orders.filter(o =>
+    (!ordersFilterCharacterId || String(o.characterId) === ordersFilterCharacterId) &&
+    (!ordersFilterStationId || String(o.location_id) === ordersFilterStationId));
+  const rows = filteredOrders.map(o => orderRowView(o, rules, fees));
   const key = ordersSortKey;
   const val = r => key === "character" ? r.o.characterName
              : key === "name"    ? (ordersState.typeNames[r.o.type_id] ?? "")
@@ -1719,6 +1808,13 @@ function renderOrdersTable() {
     return ordersSortAsc ? c : -c;
   });
 
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="14" style="text-align:center;padding:24px;color:var(--text-dim)">No orders match the selected filters.</td></tr>`;
+    table.style.display = "table";
+    msg.style.display = "none";
+    return;
+  }
+
   const money = n => n >= 1000 ? fmt(n) : n.toLocaleString("en-US", { maximumFractionDigits: 2 });
   tbody.innerHTML = rows.map(r => {
     const { o } = r;
@@ -1729,8 +1825,13 @@ function renderOrdersTable() {
     const vsJitaCls = r.vsJitaPct == null ? "" : r.vsJitaPct > 0 ? "profit-pos" : "profit-neg";
     // Zero is the good state here, not "neutral": it means nobody has undercut
     // or outbid you. Tolerance matches the one-decimal display, so a cell
-    // reading "0.0%" is never painted as though you'd been beaten.
-    const vsBestCls = r.vsBestPct == null ? "" : Math.abs(r.vsBestPct) < 0.05 ? "profit-pos" : "profit-neg";
+    // reading "0.0%" is never painted as though you'd been beaten. "Solo" gets
+    // its own muted style — it's not a competitive win, just the absence of
+    // anyone to compete with, so it shouldn't read as visually equivalent to
+    // "beat real competitors" (green) or "beaten" (red).
+    const vsBestCls = r.isSolo ? "" : r.vsBestPct == null ? "" : Math.abs(r.vsBestPct) < 0.05 ? "profit-pos" : "profit-neg";
+    const vsBestStyle = r.isSolo ? ` style="color:var(--text-dim);font-style:italic"` : "";
+    const vsBestTitle = r.isSolo ? ` title="No competing orders are listed at this station"` : "";
     const copyCell = v => v == null ? "—"
       : `<span style="cursor:pointer;text-decoration:underline dotted" title="Click to copy"
            onclick="copyOrderPrice(${Math.round(v * 100) / 100}, this)">${money(v)}</span>`;
@@ -1746,7 +1847,7 @@ function renderOrdersTable() {
         : "—"}${badge}</td>
       <td class="col-num">${r.ref != null ? money(r.ref) : "—"}</td>
       <td class="col-num ${vsJitaCls}">${r.vsJitaPct != null ? r.vsJitaPct.toFixed(1) + "%" : "—"}</td>
-      <td class="col-num ${vsBestCls}">${r.vsBestPct != null ? r.vsBestPct.toFixed(1) + "%" : "—"}</td>
+      <td class="col-num ${vsBestCls}"${vsBestStyle}${vsBestTitle}>${r.isSolo ? "solo" : r.vsBestPct != null ? r.vsBestPct.toFixed(1) + "%" : "—"}</td>
       <td class="col-num"><input type="number" class="shop-input" style="width:60px" step="1"
             value="${override ?? ""}" placeholder="${rules.globalPct}"
             onchange="setOrderMarkup(${o.type_id}, parseFloat(this.value))"></td>

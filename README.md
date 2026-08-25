@@ -40,7 +40,8 @@ If you deploy this to a real domain later, add that URL as an additional callbac
 
 How far your price sits from the **best** live offer on your own side at your order's own station — lowest sell if you're selling, highest buy if you're buying. Your own order is included in that comparison, so:
 
-- **0%** means nothing has beaten you. You hold the best price, or you're tied for it, or you're the only one there.
+- **0%** means you're tied with real competitors for the best price — nothing has beaten you, but someone else is also listed there.
+- **"solo"** means nobody else is even listed at that station on that side. It's a different state from 0%: you haven't beaten anyone, there's just no competition to beat.
 - **Positive** on a sell order: someone is undercutting you, by that much.
 - **Negative** on a buy order: someone is outbidding you, by that much.
 - **Blank** only when the station's order book can't be read at all.
@@ -48,6 +49,10 @@ How far your price sits from the **best** live offer on your own side at your or
 That last case is why `esi-markets.structure_markets.v1` matters. ESI's public `/markets/{region_id}/orders/` feed covers NPC stations and structures whose market is set to public — but **not** access-restricted citadels. If you trade out of an alliance-only structure, its entire book is invisible to the public feed (Providence's whole public feed is 42 orders; Jita's is 412 pages), so without that scope this column stays empty for every order you have there. With it, the app reads each such structure directly, authenticated as a character who has market access.
 
 If none of your logged-in characters can read a structure's market, the app says so in the warnings line rather than silently showing a blank.
+
+## Filtering the table
+
+The **Char** and **Station** column headers each carry a dropdown, populated from whichever characters and stations actually appear in your current order list. Pick one to narrow the table to just that character or station — the two filters combine (AND), and either can be reset back to "All" from its own dropdown. If a filtered character or station later has no orders (they logged out, the order closed), the filter resets itself back to "All" on the next refresh rather than silently showing an empty table.
 
 ## Cost-basis model
 

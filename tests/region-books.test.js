@@ -86,5 +86,35 @@ const { run, check, summary } = require("./harness");
   check("filters to the order's own station, not the whole region", r2.beatenSell !== 495);
   check("station with no book at all → null", r2.emptyStation === null);
   check("unknown region/type pair → null, no crash", r2.unknown === null);
+
+  // stationOfferCount: how many live orders (ours included) sit at that
+  // station on that side — the input isSolo is derived from.
+  const r3 = await run(`
+    const regionBooks = {
+      10000002: { 34: {
+        sell: [ { price: 495, remain: 5,  locationId: 60008494, orderId: 3 },
+                { price: 500, remain: 10, locationId: 60003760, orderId: 1 },
+                { price: 510, remain: 10, locationId: 60003760, orderId: 2 } ],
+        buy:  [ { price: 480, remain: 5,  locationId: 60003760, orderId: 4 } ],
+      } },
+    };
+    const crowdedSell = { order_id: 1, region_id: 10000002, type_id: 34, location_id: 60003760, is_buy_order: false };
+    const loneSeller   = { order_id: 3, region_id: 10000002, type_id: 34, location_id: 60008494, is_buy_order: false };
+    const loneBuyer     = { order_id: 4, region_id: 10000002, type_id: 34, location_id: 60003760, is_buy_order: true };
+    const emptyStation = { order_id: 99, region_id: 10000002, type_id: 34, location_id: 60011866, is_buy_order: false };
+    const unknownType  = { order_id: 1, region_id: 10000002, type_id: 999, location_id: 60003760, is_buy_order: false };
+    return {
+      crowdedSell: stationOfferCount(regionBooks, crowdedSell),
+      loneSeller:  stationOfferCount(regionBooks, loneSeller),
+      loneBuyer:   stationOfferCount(regionBooks, loneBuyer),
+      emptyStation: stationOfferCount(regionBooks, emptyStation),
+      unknown:      stationOfferCount(regionBooks, unknownType),
+    };
+  `);
+  check("two sells at the same station count as 2", r3.crowdedSell === 2);
+  check("a station with only our own sell counts as 1 (solo)", r3.loneSeller === 1);
+  check("a station with only our own buy counts as 1 (solo)", r3.loneBuyer === 1);
+  check("station with a book but nothing at that location → 0, not null", r3.emptyStation === 0);
+  check("unknown region/type pair → null, no crash", r3.unknown === null);
   summary("region-books");
 })();
