@@ -31,9 +31,9 @@ const { run, check, summary } = require("./harness");
                           is_buy_order: false, location_id: 60003760, characterName: "Beta" };
 
     const rows = [
-      { o: sell, ref: 100, stationRef: 105, avgCost: 100, basisState: "known" },
-      { o: buy,  ref: 100, stationRef: null, avgCost: null, basisState: "unknown" },
-      { o: noBasisSell, ref: 100, stationRef: null, avgCost: null, basisState: "unknown" },
+      { o: sell, ref: 100, bestRef: 105, avgCost: 100, basisState: "known" },
+      { o: buy,  ref: 100, bestRef: null, avgCost: null, basisState: "unknown" },
+      { o: noBasisSell, ref: 100, bestRef: null, avgCost: null, basisState: "unknown" },
     ];
 
     const plan = buildOrdersExportPlan(rows, rules, fees, typeNames, locNames);
@@ -54,7 +54,7 @@ const { run, check, summary } = require("./harness");
       buyMarginFormula: byCell(6, 16),
       noBasisMarginFormula: byCell(7, 16),
       vsJitaFormula: byCell(5, 9),
-      vsStationFormula: byCell(5, 11),
+      vsBestFormula: byCell(5, 11),
       deltaFormula: byCell(5, 14),
       impactFormula: byCell(5, 15),
     };
@@ -62,13 +62,15 @@ const { run, check, summary } = require("./harness");
 
   check("header row matches the 17-column layout", JSON.stringify(r2.header) ===
     JSON.stringify(["Character","Item","Side","Station","Qty Remain","Qty Total","Your Price",
-      "Avg Cost","Jita Ref","vs Jita %","Station Ref","vs Station %","Markup %",
+      "Avg Cost","Jita Ref","vs Jita %","Best Offer","vs Best %","Markup %",
       "Target","Delta","Impact","Margin %"]));
   check("settings row holds global markup and fees as percent values",
         JSON.stringify(r2.settingsRow) === '["Global Markup %",20,"Broker Fee %",3,"Sales Tax %",3]');
 
   check("sell row: static snapshot values", JSON.stringify(r2.sellDataRow.slice(0, 9)) ===
     JSON.stringify(["Alpha", "Tritanium", "Sell", "Jita IV - Moon 4", 10, 20, 130, 100, 100]));
+  check("sell row: best-offer snapshot lands in the Best Offer column", r2.sellDataRow[10] === 105);
+  check("no best offer → Best Offer cell blank, so the vs Best % formula blanks too", r2.buyDataRow[10] === "");
   check("sell row: no per-item override → markup cell blank in AOA (formula fills it)", r2.sellDataRow[12] === "");
   check("buy row: per-item override → literal 50 in AOA, no formula for that cell",
         r2.buyDataRow[12] === 50 && r2.buyMarkupFormula === undefined);
@@ -86,7 +88,7 @@ const { run, check, summary } = require("./harness");
   check("buy margin needs no cost basis, just the reference", r2.buyMarginFormula.f === 'IF(I7="","",(I7-G7)/I7*100)');
   check("no-basis sell gets a literal n/a, not a formula", r2.noBasisRow[16] === "n/a" && r2.noBasisMarginFormula === undefined);
   check("vs Jita % formula is direction-agnostic (price vs ref)", r2.vsJitaFormula.f === 'IF(I6="","",(G6-I6)/I6*100)');
-  check("vs Station % formula references the station-ref column", r2.vsStationFormula.f.includes("K6"));
+  check("vs Best % formula references the best-offer column", r2.vsBestFormula.f === 'IF(K6="","",(G6-K6)/K6*100)');
   check("delta formula is target minus price", r2.deltaFormula.f === 'IF(N6="","",N6-G6)');
   check("impact formula is abs(delta) times qty remain", r2.impactFormula.f === 'IF(O6="","",ABS(O6)*E6)');
   summary("orders-export");

@@ -5,13 +5,13 @@ A standalone market-order manager for EVE Online. Single-file, no build step, no
 ## What it does
 
 - Logs in as multiple EVE characters, across multiple accounts, at once.
-- Shows every active market order for every logged-in character: your price, weighted-average cost basis, live Jita reference price, live competing-offer price at the order's own station, and a markup-driven target price.
+- Shows every active market order for every logged-in character: your price, weighted-average cost basis, live Jita reference price, how far you are off the best competing offer at the order's own station, and a markup-driven target price.
 - Click any Avg Cost to see exactly which purchases are contributing to it.
 - Exports everything to a real Excel workbook — with live formulas, not a static snapshot. Edit the Global Markup %, Broker Fee %, or Sales Tax % cells in Excel and every row recalculates.
 
 ## Hard constraint
 
-**ESI (EVE's API) has no endpoint to modify market orders.** This tool computes what your prices *should* be — it never submits anything. You apply price changes manually in the EVE client. The Target/Δ columns are click-to-copy to make that fast.
+**ESI (EVE's API) has no endpoint to modify market orders.** This tool computes what your prices *should* be — it never submits anything. You apply price changes manually in the EVE client. The Target and Δ Price columns are click-to-copy to make that fast.
 
 ## Running it
 
@@ -26,14 +26,28 @@ Then open `http://localhost:8080/`.
 ## One-time setup: register an EVE application
 
 1. Go to [developers.eveonline.com/applications](https://developers.eveonline.com/applications) and create a new application (or edit an existing one).
-2. Add these three scopes:
+2. Add these four scopes:
    - `esi-markets.read_character_orders.v1`
    - `esi-wallet.read_character_wallet.v1`
    - `esi-universe.read_structures.v1`
+   - `esi-markets.structure_markets.v1`
 3. Set the callback URL to wherever you're hosting this page (e.g. `http://localhost:8080/` for local use, or your real deployed URL).
 4. Paste the application's Client ID into the "EVE SSO" field in the app and click **Log In**. Repeat for every character you want tracked — logging in again with the app already open adds a character, it doesn't replace the current one.
 
 If you deploy this to a real domain later, add that URL as an additional callback on the same application (or register a second one) — the Client ID field has no default baked in, so you decide.
+
+## The "vs Best %" column
+
+How far your price sits from the **best** live offer on your own side at your order's own station — lowest sell if you're selling, highest buy if you're buying. Your own order is included in that comparison, so:
+
+- **0%** means nothing has beaten you. You hold the best price, or you're tied for it, or you're the only one there.
+- **Positive** on a sell order: someone is undercutting you, by that much.
+- **Negative** on a buy order: someone is outbidding you, by that much.
+- **Blank** only when the station's order book can't be read at all.
+
+That last case is why `esi-markets.structure_markets.v1` matters. ESI's public `/markets/{region_id}/orders/` feed covers NPC stations and structures whose market is set to public — but **not** access-restricted citadels. If you trade out of an alliance-only structure, its entire book is invisible to the public feed (Providence's whole public feed is 42 orders; Jita's is 412 pages), so without that scope this column stays empty for every order you have there. With it, the app reads each such structure directly, authenticated as a character who has market access.
+
+If none of your logged-in characters can read a structure's market, the app says so in the warnings line rather than silently showing a blank.
 
 ## Cost-basis model
 

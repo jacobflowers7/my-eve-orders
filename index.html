@@ -283,7 +283,7 @@
   <fieldset class="ctl-section">
   <legend>Account</legend>
   <div class="control-group">
-    <label title="Register an application at developers.eveonline.com with scopes esi-markets.read_character_orders.v1, esi-wallet.read_character_wallet.v1, esi-universe.read_structures.v1, and a callback URL matching wherever you host this page. Then paste its Client ID here and log in — repeat for every character you want tracked.">EVE SSO</label>
+    <label title="Register an application at developers.eveonline.com with scopes esi-markets.read_character_orders.v1, esi-wallet.read_character_wallet.v1, esi-universe.read_structures.v1, esi-markets.structure_markets.v1, and a callback URL matching wherever you host this page. Then paste its Client ID here and log in — repeat for every character you want tracked.">EVE SSO</label>
     <div id="sso-login-form" style="display:flex;gap:6px">
       <input type="text" id="sso-client-id" placeholder="Client ID…" style="width:260px" autocomplete="off"
              onchange="localStorage.setItem('myOrders.ssoClientId', this.value.trim())" />
@@ -321,10 +321,10 @@
         <th class="col-num" onclick="setOrdersSort('avgCost')" title="Weighted-average price paid, pooled across all characters">Avg Cost</th>
         <th class="col-num" onclick="setOrdersSort('ref')" title="Jita 4-4 volume-weighted 5% split">Jita Ref</th>
         <th class="col-num" onclick="setOrdersSort('vsJita')" title="Your current posted price vs the Jita reference, right now — (price − ref) / ref × 100. Positive = priced above Jita. No cost-basis needed, so this stays populated even when Margin % is n/a.">vs Jita %</th>
-        <th class="col-num" onclick="setOrdersSort('vsStation')" title="Your price vs other LIVE offers on the same side (sells vs sells, buys vs buys) at this exact station right now — excludes your own order. Blank if you're the only one there.">vs Station %</th>
+        <th class="col-num" onclick="setOrdersSort('vsBest')" title="Your price vs the BEST live offer on your own side (lowest sell / highest buy) at this exact station right now. 0% means nothing has beaten you — you hold the best price, or are tied for it. Sells read positive (how far above the cheapest you are), buys negative (how far below the top bid). Blank only when the station's book can't be read at all.">vs Best %</th>
         <th class="col-num" title="Per-item markup % — blank uses the global rule">Markup %</th>
         <th class="col-num" onclick="setOrdersSort('target')" title="Ref × (1±markup). Click a value to copy it">Target</th>
-        <th class="col-num" onclick="setOrdersSort('delta')" title="Target − your price. Click to copy">Δ</th>
+        <th class="col-num" onclick="setOrdersSort('delta')" title="Target − your price: the amount to adjust your price by to hit Target. Click to copy">Δ Price</th>
         <th class="col-num sort-desc" onclick="setOrdersSort('impact')" title="|Δ| × qty — how much ISK is at stake in repricing this order">Impact</th>
         <th class="col-num" onclick="setOrdersSort('margin')" title="Sells: net proceeds vs avg cost. Buys: % under Jita ref">Margin %</th>
       </tr>
@@ -417,10 +417,18 @@ const WALLET_SCOPE  = "esi-wallet.read_character_wallet.v1";
 // deliberately not part of ORDERS_SCOPES — a character missing it still works.
 const STRUCTURE_SCOPE = "esi-universe.read_structures.v1";
 
+// Access-restricted structure markets (alliance- or coalition-only citadels)
+// are absent from the public /markets/{region}/orders/ feed entirely — it
+// carries NPC stations and structures whose market is set public, nothing else.
+// Without this scope an order posted in such a structure has no competing book
+// at all, so its "vs Best %" is permanently blank. Optional like STRUCTURE_SCOPE:
+// a character missing it still loads orders, it just can't see those books.
+const MARKET_STRUCTURE_SCOPE = "esi-markets.structure_markets.v1";
+
 // The two scopes a character must have for its orders and cost basis to load.
 const ORDERS_SCOPES = [ORDERS_SCOPE, WALLET_SCOPE];
 
-const SSO_SCOPES = [...ORDERS_SCOPES, STRUCTURE_SCOPE].join(" ");
+const SSO_SCOPES = [...ORDERS_SCOPES, STRUCTURE_SCOPE, MARKET_STRUCTURE_SCOPE].join(" ");
 
 
 // The scp claim is a string for one scope, an array for several.
@@ -1180,16 +1188,106 @@ async function fetchRegionBooksForPairs(pairs) {
 }
 
 
-// The live reference for "other offers at this exact station right now" —
-// same side as the order (sells compare to sells, buys to buys), and the
-// order's own posting is excluded so a lone seller/buyer never ends up
-// compared against themselves.
-function stationSideRef(regionBooks, order) {
+// One structure's entire market book, paginated. Returns null — not [] — when
+// this character can't read it (no market access, expired session, ESI error),
+// so the caller can tell "no access, try another character" apart from "access
+// granted, the book really is empty" and fall through accordingly.
+async function fetchStructureOrders(rec, structureId) {
+  const token = await getAccessTokenFor(rec);
+  if (!token) return null;
+  const auth = { headers: { Authorization: `Bearer ${token}` } };
+  const url = page => `${ESI}/markets/structures/${structureId}/?datasource=tranquility&page=${page}`;
+  try {
+    const first = await fetch(url(1), auth);
+    if (!first.ok) return null;                       // 403 = no access as this character
+    let rows = await first.json();
+    const pages = parseInt(first.headers.get("X-Pages") || "1");
+    for (let p = 2; p <= pages; p++) {
+      const r = await fetch(url(p), auth);
+      if (r.ok) rows = rows.concat(await r.json());
+    }
+    return rows;
+  } catch { return null; }
+}
+
+
+// Fills in the books the public region feed cannot see. Merges INTO regionBooks
+// rather than returning a parallel structure, so every downstream lookup stays
+// keyed one way no matter where a given book came from. Must therefore run
+// AFTER fetchRegionBooksForPairs, not beside it.
+async function fetchStructureBooksInto(regionBooks, orders) {
+  const warnings = [];
+
+  // Group by structure: one request serves every order we hold there, whatever
+  // its type or which character posted it.
+  const wanted = new Map();   // structureId → { regionId, typeIds, characterIds }
+  for (const o of orders) {
+    if (o.location_id < 1_000_000_000_000) continue;   // NPC station — already in the region feed
+    const e = wanted.get(o.location_id)
+      ?? { regionId: o.region_id, typeIds: new Set(), characterIds: [] };
+    e.typeIds.add(o.type_id);
+    if (!e.characterIds.includes(o.characterId)) e.characterIds.push(o.characterId);
+    wanted.set(o.location_id, e);
+  }
+
+  await Promise.all([...wanted].map(async ([structureId, { regionId, typeIds, characterIds }]) => {
+    // Market access is per-character, exactly like docking rights, so every
+    // character holding an order here is a candidate — the first may be the one
+    // who since lost access (corp change, war, structure sold) while a later
+    // one still has it. Same reasoning as resolveLocationNames.
+    for (const characterId of characterIds) {
+      const rec = ssoChars.find(c => c.characterId === characterId);
+      if (!rec || !charHasScope(rec, MARKET_STRUCTURE_SCOPE)) continue;
+      const rows = await fetchStructureOrders(rec, structureId);
+      if (rows === null) continue;                     // no access as this one — try the next
+
+      for (const o of rows) {
+        if (!typeIds.has(o.type_id)) continue;         // whole-structure book; keep only our types
+        const out = ((regionBooks[regionId] ??= {})[o.type_id] ??= { sell: [], buy: [] });
+        const side = o.is_buy_order ? out.buy : out.sell;
+        // A PUBLIC structure is served by both feeds, so the same order can
+        // arrive twice — that would double its weight in the book.
+        if (side.some(x => x.orderId === o.order_id)) continue;
+        side.push({ price: o.price, remain: o.volume_remain, locationId: structureId, orderId: o.order_id });
+      }
+      // Re-establish best-first ordering; stationBestRef reads the head.
+      for (const typeId of typeIds) {
+        const out = regionBooks[regionId]?.[typeId];
+        if (!out) continue;
+        out.sell.sort((a, b) => a.price - b.price);
+        out.buy.sort((a, b) => b.price - a.price);
+      }
+      return;                                          // loaded — don't burn requests on the rest
+    }
+    const missingScope = characterIds
+      .map(id => ssoChars.find(c => c.characterId === id))
+      .filter(rec => rec && !charHasScope(rec, MARKET_STRUCTURE_SCOPE));
+    const where = structureRegistry[structureId]?.name ?? `structure ${structureId}`;
+    warnings.push(missingScope.length === characterIds.length
+      ? `${where}: needs the structure-market scope — log in again to compare prices there`
+      : `${where}: no logged-in character can read its market — competing prices unavailable`);
+  }));
+
+  return [...new Set(warnings)];   // one line per structure, not per character
+}
+
+
+// The live reference for "the best offer at this exact station right now" —
+// lowest sell for a sell order, highest buy for a buy order. The order's OWN
+// posting is deliberately INCLUDED: the question being answered is "has anyone
+// beaten my price here?", so when nobody has, the best offer is ours and the
+// comparison lands on exactly 0%. Excluding it would instead measure the gap to
+// the runner-up, which reads as though we were losing while actually winning.
+function stationBestRef(regionBooks, order) {
   const book = regionBooks[order.region_id]?.[order.type_id];
   if (!book) return null;
   const side = order.is_buy_order ? book.buy : book.sell;
-  const others = side.filter(o => o.locationId === order.location_id && o.orderId !== order.order_id);
-  return vwPercentilePrice(others, 0.05);
+  const here = side.filter(o => o.locationId === order.location_id);
+  if (!here.length) return null;   // book unavailable for this station entirely
+  // Books are sorted best-first and filtering by station preserves that, so the
+  // head is the best offer. No volume percentile here: a one-unit troll order
+  // still beats you in the client's sort, which is what a trader is reacting to.
+  return here[0].price;
 }
 
 
@@ -1257,7 +1355,7 @@ function resolveMarkupPct(rules, typeId) {
 // The one place margin math lives. Sell margins are net of broker fee + sales
 // tax against pooled avg cost; buy "margin" is distance under the reference
 // (no basis involved — a buy order is acquisition, not liquidation).
-function deriveOrderRow(order, basisEntry, ref, rules, fees, stationRef) {
+function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef) {
   const markupPct = resolveMarkupPct(rules, order.type_id);
   const m = markupPct / 100;
   const avgCost = basisEntry?.avgCost ?? null;
@@ -1279,13 +1377,14 @@ function deriveOrderRow(order, basisEntry, ref, rules, fees, stationRef) {
   // so it stays populated even when marginPct is n/a for lack of purchase history.
   const vsJitaPct = ref != null && ref > 0 ? (order.price - ref) / ref * 100 : null;
 
-  // Current price vs other LIVE offers on the same side (sell-vs-sells,
-  // buy-vs-buys) at this order's own station right now — the caller excludes
-  // the order itself before computing stationRef, so a lone seller/buyer at
-  // a station correctly yields null rather than comparing against itself.
-  const vsStationPct = stationRef != null && stationRef > 0 ? (order.price - stationRef) / stationRef * 100 : null;
+  // Distance from the best LIVE offer on our own side at our own station.
+  // stationBestRef includes our own posting, so 0 means nothing has beaten us —
+  // whether we're tied with a rival or the only one there. Sells read >= 0 (how
+  // far above the cheapest we sit), buys read <= 0 (how far below the top bid);
+  // either way, further from zero is worse.
+  const vsBestPct = bestRef != null && bestRef > 0 ? (order.price - bestRef) / bestRef * 100 : null;
 
-  return { target, delta, impact, marginPct, vsJitaPct, vsStationPct, avgCost, basisState, markupPct };
+  return { target, delta, impact, marginPct, vsJitaPct, vsBestPct, avgCost, basisState, markupPct };
 }
 
 
@@ -1307,9 +1406,16 @@ async function refreshOrders() {
     // Everything below only needs `orders`, and none of the four depend on each
     // other — one round trip instead of four.
     const typeIds = [...new Set(orders.map(o => o.type_id))];
-    const [books, regionBooks, locationNames, typeNameIds] = await Promise.all([
+    const [books, region, locationNames, typeNameIds] = await Promise.all([
       fetchJitaBooksForTypes(typeIds),
-      fetchRegionBooksForPairs(orders.map(o => ({ regionId: o.region_id, typeId: o.type_id }))),
+      (async () => {
+        const regionBooks = await fetchRegionBooksForPairs(
+          orders.map(o => ({ regionId: o.region_id, typeId: o.type_id })));
+        // Structure books merge into the region books, so this is sequenced
+        // after that fetch rather than run alongside it.
+        const warnings = await fetchStructureBooksInto(regionBooks, orders);
+        return { regionBooks, warnings };
+      })(),
       resolveLocationNames(orders.map(o => ({ locationId: o.location_id, characterId: o.characterId }))),
       resolveIds(typeIds),
     ]);
@@ -1319,10 +1425,10 @@ async function refreshOrders() {
       basis: computeCostBasis(ledger),
       ledger,
       books,
-      regionBooks,
+      regionBooks: region.regionBooks,
       names,
       typeNames: Object.fromEntries(typeIds.map(t => [t, names[t] ?? `Type ${t}`])),
-      warnings: [...ow, ...ww],
+      warnings: [...ow, ...ww, ...region.warnings],
       loadedAt: Date.now(),
     };
   } catch (e) {
@@ -1338,9 +1444,9 @@ async function refreshOrders() {
 function orderRowView(o, rules, fees) {
   const book  = ordersState.books[o.type_id] ?? { sell: [], buy: [] };
   const ref   = jitaRefPrice(book.sell, book.buy);
-  const stationRef = stationSideRef(ordersState.regionBooks ?? {}, o);
-  const d     = deriveOrderRow(o, ordersState.basis[o.type_id], ref, rules, fees, stationRef);
-  return { o, ref, stationRef, ...d };
+  const bestRef = stationBestRef(ordersState.regionBooks ?? {}, o);
+  const d     = deriveOrderRow(o, ordersState.basis[o.type_id], ref, rules, fees, bestRef);
+  return { o, ref, bestRef, ...d };
 }
 
 
@@ -1479,7 +1585,7 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
     "Broker Fee %", fees.brokerFee * 100, "Sales Tax %", fees.salesTax * 100];
   aoa[3] = [];
   aoa[ORDERS_XLSX_HEADER_ROW] = ["Character", "Item", "Side", "Station", "Qty Remain", "Qty Total",
-    "Your Price", "Avg Cost", "Jita Ref", "vs Jita %", "Station Ref", "vs Station %", "Markup %",
+    "Your Price", "Avg Cost", "Jita Ref", "vs Jita %", "Best Offer", "vs Best %", "Markup %",
     "Target", "Delta", "Impact", "Margin %"];
 
   const formulas = [];
@@ -1500,7 +1606,7 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
       row.avgCost ?? "",
       row.ref ?? "",
       "",
-      row.stationRef ?? "",
+      row.bestRef ?? "",
       "",
       hasOverride ? rules.perItem[o.type_id] : "",
       "", "", "", "",
@@ -1602,7 +1708,7 @@ function renderOrdersTable() {
              : key === "avgCost" ? (r.avgCost ?? -Infinity)
              : key === "ref"     ? (r.ref ?? -Infinity)
              : key === "vsJita"  ? (r.vsJitaPct ?? -Infinity)
-             : key === "vsStation" ? (r.vsStationPct ?? -Infinity)
+             : key === "vsBest"  ? (r.vsBestPct ?? -Infinity)
              : key === "target"  ? (r.target ?? -Infinity)
              : key === "delta"   ? (r.delta ?? -Infinity)
              : key === "margin"  ? (r.marginPct ?? -Infinity)
@@ -1621,7 +1727,10 @@ function renderOrdersTable() {
       ? ` <span title="Ledger starts mid-history for this item — average may be wrong, margin suppressed" style="color:#e0a040;font-size:10px">partial</span>` : "";
     const marginCls = r.marginPct == null ? "" : r.marginPct > 0 ? "profit-pos" : "profit-neg";
     const vsJitaCls = r.vsJitaPct == null ? "" : r.vsJitaPct > 0 ? "profit-pos" : "profit-neg";
-    const vsStationCls = r.vsStationPct == null ? "" : r.vsStationPct > 0 ? "profit-pos" : "profit-neg";
+    // Zero is the good state here, not "neutral": it means nobody has undercut
+    // or outbid you. Tolerance matches the one-decimal display, so a cell
+    // reading "0.0%" is never painted as though you'd been beaten.
+    const vsBestCls = r.vsBestPct == null ? "" : Math.abs(r.vsBestPct) < 0.05 ? "profit-pos" : "profit-neg";
     const copyCell = v => v == null ? "—"
       : `<span style="cursor:pointer;text-decoration:underline dotted" title="Click to copy"
            onclick="copyOrderPrice(${Math.round(v * 100) / 100}, this)">${money(v)}</span>`;
@@ -1637,7 +1746,7 @@ function renderOrdersTable() {
         : "—"}${badge}</td>
       <td class="col-num">${r.ref != null ? money(r.ref) : "—"}</td>
       <td class="col-num ${vsJitaCls}">${r.vsJitaPct != null ? r.vsJitaPct.toFixed(1) + "%" : "—"}</td>
-      <td class="col-num ${vsStationCls}">${r.vsStationPct != null ? r.vsStationPct.toFixed(1) + "%" : "—"}</td>
+      <td class="col-num ${vsBestCls}">${r.vsBestPct != null ? r.vsBestPct.toFixed(1) + "%" : "—"}</td>
       <td class="col-num"><input type="number" class="shop-input" style="width:60px" step="1"
             value="${override ?? ""}" placeholder="${rules.globalPct}"
             onchange="setOrderMarkup(${o.type_id}, parseFloat(this.value))"></td>

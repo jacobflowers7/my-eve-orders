@@ -26,12 +26,25 @@ function doc() {
         { order_id: 3, type_id: 36, price: 50, volume_remain: 1, volume_total: 1,
           is_buy_order: false, location_id: 60003760, region_id: 10000002, characterId: 22, characterName: "Beta" },
       ],
-      // A competing sell at order #1's own station: (130-150)/150*100 = -13.3%
-      regionBooks: { 10000002: { 34: {
-        sell: [ { price: 130, remain: 10, locationId: 60003760, orderId: 1 },
-                { price: 150, remain: 10, locationId: 60003760, orderId: 100 } ],
-        buy: [],
-      } } },
+      regionBooks: { 10000002: {
+        // Order #1 (sell, 130) is undercut at its own station by a rival at 120,
+        // so the best offer there is NOT ours: (130-120)/120*100 = 8.3%.
+        // The 110 sell is at a DIFFERENT station and must be ignored entirely.
+        34: {
+          sell: [ { price: 110, remain: 10, locationId: 60008494, orderId: 101 },
+                  { price: 120, remain: 10, locationId: 60003760, orderId: 100 },
+                  { price: 130, remain: 10, locationId: 60003760, orderId: 1 },
+                  { price: 150, remain: 10, locationId: 60003760, orderId: 102 } ],
+          buy: [],
+        },
+        // Order #2 (buy, 90) IS the top bid at its station — nobody has outbid
+        // it, so it must read exactly 0.0%, not the gap to the 80 runner-up.
+        35: {
+          sell: [],
+          buy: [ { price: 90, remain: 100, locationId: 60008494, orderId: 2 },
+                 { price: 80, remain: 50,  locationId: 60008494, orderId: 103 } ],
+        },
+      } },
       basis: { 34: { unitsOnHand: 100, totalCost: 10000, avgCost: 100, partial: false },
                36: { unitsOnHand: 5, totalCost: 0, avgCost: null, partial: true } },
       ledger: [
@@ -81,9 +94,15 @@ function doc() {
   check("detail modal shows the contributing buy", r.modalBody.includes("Alpha") && r.modalBody.includes("100"));
   check("detail modal shows where it was purchased", r.modalBody.includes("Amarr VIII"));
   check("detail modal is opened (display:flex)", r.modalShown === "flex");
-  // order #1: competing sell at 150 excludes itself → vsStationPct = (130-150)/150*100 = -13.3%
-  check("vs-Station % populated from a competing same-station offer", r.html.includes("-13.3%"));
-  check("vs-Station % negative renders as a loss color", r.html.includes('col-num profit-neg">-13.3%'));
+  // order #1: undercut at its own station by 120 → (130-120)/120*100 = 8.3%
+  check("vs-Best % measured against the cheapest offer at the same station", r.html.includes("8.3%"));
+  check("vs-Best % ignores cheaper offers at OTHER stations in the region", !r.html.includes("18.2%"));
+  check("being beaten renders as a loss color", r.html.includes('col-num profit-neg">8.3%'));
+  // order #2: holds the top bid → 0.0%, and that is the WINNING state, so green
+  check("holding the best price reads exactly 0.0%", r.html.includes("0.0%"));
+  check("0.0% is colored as winning, not as a loss", r.html.includes('col-num profit-pos">0.0%'));
+  // order #3 (type 36): no region book at all → nothing to compare against
+  check("unreadable station book still renders an em dash, not NaN", r.html.includes(">—<"));
   // order #1: delta=-10 (target 120 < price 130), impact=|−10|×10=100 → cell must
   // carry the loss color even though impact itself is an unsigned magnitude
   check("impact cell colored by delta's direction, not left neutral",

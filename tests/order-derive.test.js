@@ -23,10 +23,13 @@ const { run, check, summary } = require("./harness");
       noRef:    deriveOrderRow(sell, basis, null, rules, fees),
       zeroFees: deriveOrderRow(sell, basis, 100, rules, { brokerFee: 0, salesTax: 0 }),
       belowRef: deriveOrderRow({ ...sell, price: 90 }, basis, 100, rules, fees),
-      // stationRef is the 5th positional param that ref/basis math doesn't touch —
+      // bestRef is the 6th positional param that ref/basis math doesn't touch —
       // must be independent of, and not confused with, the Jita ref (100 here)
-      station:      deriveOrderRow(sell, basis, 100, rules, fees, 110),
-      noStationRef: deriveOrderRow(sell, basis, 100, rules, fees, null),
+      beaten:     deriveOrderRow(sell, basis, 100, rules, fees, 110),
+      sellAtBest: deriveOrderRow(sell, basis, 100, rules, fees, 130),   // our own price IS the best
+      buyAtBest:  deriveOrderRow({ ...buy, price: 130 }, basis, 100, rules, fees, 130),
+      buyOutbid:  deriveOrderRow({ ...buy, price: 130 }, basis, 100, rules, fees, 140),
+      noBestRef:  deriveOrderRow(sell, basis, 100, rules, fees, null),
     };
   `);
 
@@ -58,9 +61,16 @@ const { run, check, summary } = require("./harness");
   check("vsJitaPct: needs no cost basis (unknown basis still populates)", r.unknown.vsJitaPct === 30);
   check("vsJitaPct: null when ref is missing", r.noRef.vsJitaPct === null);
 
-  // vsStationPct: price=130, stationRef=110 → (130-110)/110*100 = 18.18...
-  check("vsStationPct computed from stationRef, not the Jita ref", Math.abs(r.station.vsStationPct - 18.1818) < 1e-3);
-  check("vsStationPct: null when stationRef missing (e.g. lone seller)", r.noStationRef.vsStationPct === null);
-  check("vsStationPct: omitted stationRef arg is also null, doesn't crash", r.sellRow.vsStationPct === null);
+  // vsBestPct: price=130, bestRef=110 → (130-110)/110*100 = 18.18...
+  check("vsBestPct computed from bestRef, not the Jita ref", Math.abs(r.beaten.vsBestPct - 18.1818) < 1e-3);
+  // The whole point of including our own order in stationBestRef: holding the
+  // best price must land on exactly 0, not on the distance to the runner-up.
+  check("vsBestPct: sell holding the best price is exactly 0", r.sellAtBest.vsBestPct === 0);
+  check("vsBestPct: buy holding the top bid is exactly 0", r.buyAtBest.vsBestPct === 0);
+  // Buys read negative when beaten — someone is bidding above us.
+  check("vsBestPct: outbid buy is negative", Math.abs(r.buyOutbid.vsBestPct - (-7.1428)) < 1e-3);
+  check("vsBestPct: sells never read negative (best is <= our price)", r.beaten.vsBestPct > 0);
+  check("vsBestPct: null when bestRef missing (station book unreadable)", r.noBestRef.vsBestPct === null);
+  check("vsBestPct: omitted bestRef arg is also null, doesn't crash", r.sellRow.vsBestPct === null);
   summary("order-derive");
 })();
