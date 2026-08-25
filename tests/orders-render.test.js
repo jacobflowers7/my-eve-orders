@@ -92,6 +92,7 @@ function doc() {
   check("partial badge on mid-history basis", r.html.includes("partial"));
   check("no-ref order shows n/a not NaN", !r.html.includes("NaN"));
   check("copy affordance present", r.html.includes("copyOrderPrice"));
+  check("item-name copy affordance present", r.html.includes("copyItemName(this)"));
   check("markup override input per row", r.html.includes("setOrderMarkup(34"));
   check("stale-char warning surfaced", r.warn.includes("Beta"));
   // sell #1: price=130, ref=100 (Jita sell price) → vsJitaPct = 30.0%; populated even

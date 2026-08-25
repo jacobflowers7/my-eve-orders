@@ -48,6 +48,8 @@ const { run, check, summary } = require("./harness");
   check("character name escaped in orders render", !r2.includes("<img"));
   check("station name escaped in orders render", !r2.includes("<script>"));
   check("item name escaped in orders render", !r2.includes("<svg"));
+  check("copyItemName reads el.textContent, so item names with apostrophes need no argument escaping",
+        !r2.includes("copyItemName('") && !r2.includes('copyItemName("'));
 
   summary("esc-html");
 })();

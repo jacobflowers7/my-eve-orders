@@ -1571,11 +1571,26 @@ function setOrderMarkup(typeId, pct) {
 }
 
 
-async function copyOrderPrice(value, el) {
-  try { await navigator.clipboard.writeText(String(value)); } catch { return; }
+// Shared by every click-to-copy cell: write text, flash a checkmark over
+// whatever the element currently shows, then restore it.
+async function copyText(text, el) {
+  try { await navigator.clipboard.writeText(text); } catch { return; }
   const old = el.textContent;
   el.textContent = "✓ copied";
   setTimeout(() => { el.textContent = old; }, 900);
+}
+
+async function copyOrderPrice(value, el) {
+  await copyText(String(value), el);
+}
+
+// Takes the element itself rather than the name as an argument — item names
+// can contain apostrophes/quotes (e.g. Zainou 'Beancounter' implants), which
+// would break out of the onclick="..." attribute if inlined as a JS string
+// literal. Reading el.textContent sidesteps escaping entirely: it copies
+// exactly what's on screen, no argument needed.
+async function copyItemName(el) {
+  await copyText(el.textContent, el);
 }
 
 
@@ -1873,7 +1888,8 @@ function renderOrdersTable() {
            onclick="copyOrderPrice(${Math.round(v * 100) / 100}, this)">${money(v)}</span>`;
     return `<tr>
       <td style="font-size:11px;color:var(--text-dim)">${escHtml(o.characterName)}</td>
-      <td class="col-name">${escHtml(ordersState.typeNames[o.type_id] ?? `Type ${o.type_id}`)}${o.is_buy_order ? ` <span style="color:#c878c8;font-size:10px;font-weight:700">BUY</span>` : ""}</td>
+      <td class="col-name"><span style="cursor:pointer;text-decoration:underline dotted" title="Click to copy item name"
+            onclick="copyItemName(this)">${escHtml(ordersState.typeNames[o.type_id] ?? `Type ${o.type_id}`)}</span>${o.is_buy_order ? ` <span style="color:#c878c8;font-size:10px;font-weight:700">BUY</span>` : ""}</td>
       <td style="font-size:11px">${escHtml(ordersState.names[o.location_id] ?? `Location ${o.location_id}`)}</td>
       <td class="col-num">${fmt(o.volume_remain)}<span style="color:var(--text-dim)">/${fmt(o.volume_total)}</span></td>
       <td class="col-num">${money(o.price)}</td>
