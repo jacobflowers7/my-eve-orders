@@ -347,7 +347,7 @@
         <th class="col-num" onclick="setOrdersSort('qty')" title="Volume remaining / total">Qty</th>
         <th class="col-num" onclick="setOrdersSort('price')">Your Price</th>
         <th class="col-num" onclick="setOrdersSort('avgCost')" title="Weighted-average price paid, pooled across all characters">Avg Cost</th>
-        <th class="col-num" onclick="setOrdersSort('ref')" title="Jita 4-4 volume-weighted 5% split">Jita Ref</th>
+        <th class="col-num" onclick="setOrdersSort('ref')" title="Jita 4-4 sell price — 5% volume-weighted percentile of the sell book, so single-unit troll orders don't set it. Falls back to the buy side only when nothing is for sale at all.">Jita Ref</th>
         <th class="col-num" onclick="setOrdersSort('vsJita')" title="Your current posted price vs the Jita reference, right now — (price − ref) / ref × 100. Positive = priced above Jita. No cost-basis needed, so this stays populated even when Margin % is n/a.">vs Jita %</th>
         <th class="col-num" onclick="setOrdersSort('vsBest')" title="Your price vs the BEST live offer on your own side (lowest sell / highest buy) at this exact station right now. 0% means you're tied for the best price against real competitors; &quot;solo&quot; means nobody else is even listed there. Sells read positive (how far above the cheapest you are), buys negative (how far below the top bid). Blank only when the station's book can't be read at all.">vs Best %</th>
         <th class="col-num" title="Per-item markup % — blank uses the global rule">Markup %</th>
@@ -1170,11 +1170,16 @@ function vwPercentilePrice(book, pct) {
 }
 
 
+// The SELL side is the reference, not the bid/ask midpoint. A midpoint is only
+// meaningful when the spread is tight; on low-velocity items the Jita buy book
+// is lowball fishing bids (e.g. 1.8M bids under a 129M ask), and averaging
+// against those halves the ref — which then silently halves every target price
+// derived from it. "Jita price" in every trading tool means the sell price;
+// for buy orders it doubles as the flip-value anchor (margin = how far below
+// what the item actually sells for you're bidding).
 function jitaRefPrice(sellBook, buyBook) {
   const s = vwPercentilePrice(sellBook, 0.05);
-  const b = vwPercentilePrice(buyBook, 0.05);
-  if (s != null && b != null) return (s + b) / 2;
-  return s ?? b;                        // one-sided market: better than n/a
+  return s ?? vwPercentilePrice(buyBook, 0.05);   // no sells at all: bid side beats n/a
 }
 
 

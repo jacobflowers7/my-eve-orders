@@ -94,7 +94,7 @@ function doc() {
   check("copy affordance present", r.html.includes("copyOrderPrice"));
   check("markup override input per row", r.html.includes("setOrderMarkup(34"));
   check("stale-char warning surfaced", r.warn.includes("Beta"));
-  // sell #1: price=130, ref=100 (book mid) → vsJitaPct = 30.0%; populated even
+  // sell #1: price=130, ref=100 (Jita sell price) → vsJitaPct = 30.0%; populated even
   // though it needs no cost basis (unlike order #3, whose n/a ref keeps it "—")
   check("vs-Jita % populated without cost basis", r.html.includes("30.0%"));
   check("avg cost cell opens the detail modal", r.html.includes("openCostBasisDetail(34"));
