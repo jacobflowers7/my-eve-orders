@@ -362,13 +362,13 @@
   </div>
 </div>
 
-<div id="cost-basis-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1000;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:20px;width:640px;max-width:95vw;max-height:80vh;flex-direction:column;gap:12px">
-  <div style="display:flex;justify-content:space-between;align-items:center">
+<div id="cost-basis-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1000;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:20px;width:640px;max-width:95vw;max-height:85vh;flex-direction:column;gap:12px">
+  <div style="display:flex;justify-content:space-between;align-items:center;flex:0 0 auto">
     <span id="cost-basis-modal-title" style="color:var(--gold);font-size:13px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase">Cost Basis</span>
     <button onclick="closeCostBasisDetail()" style="background:none;border:none;color:var(--text-dim);font-size:16px;cursor:pointer;line-height:1">✕</button>
   </div>
-  <p style="color:var(--text-dim);font-size:11px;line-height:1.5">Avg Cost is a weighted average, not one order. These are the buys still contributing to it — everything since this item's position last fully sold out to zero.</p>
-  <div id="cost-basis-modal-body" style="overflow:auto;max-height:50vh"></div>
+  <p style="color:var(--text-dim);font-size:11px;line-height:1.5;flex:0 0 auto">Avg Cost is a weighted average, not one order. These are the buys still contributing to it — everything since this item's position last fully sold out to zero.</p>
+  <div id="cost-basis-modal-body" style="overflow:auto;flex:1 1 auto;min-height:0"></div>
 </div>
 
 <script id="xlsx-lib">
