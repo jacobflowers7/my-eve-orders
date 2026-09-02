@@ -853,10 +853,10 @@ let ESI_RETRY_MIN_DELAY_MS = 1000; // overridable in tests
 const sleepMs = ms => new Promise(res => setTimeout(res, ms));
 
 
-async function esiFetchRetry(url, { retries = 3 } = {}) {
+async function esiFetchRetry(url, { retries = 3, init } = {}) {
   let r = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
-    try { r = await fetch(url); } catch { r = null; } // network error → retry
+    try { r = await fetch(url, init); } catch { r = null; } // network error → retry
     if (r) {
       const remain = parseInt(r.headers?.get?.("X-ESI-Error-Limit-Remain") ?? "", 10);
       const reset  = parseInt(r.headers?.get?.("X-ESI-Error-Limit-Reset")  ?? "", 10);
@@ -981,6 +981,27 @@ async function idbTxAll() {
     rq.onsuccess = () => { db.close(); res(rq.result ?? []); };
     rq.onerror   = () => { db.close(); res([]); };
   });
+}
+
+
+// ── Dashboard: character wallet balances ─────────────────────────────────────
+// The wallet scope already granted for the transaction ledger also covers the
+// balance endpoint, so this costs no re-login. Runs concurrently with the
+// orders/ledger refresh; token-refresh races are already deduped in
+// getAccessTokenFor. A character without the scope simply shows "—".
+async function fetchWalletBalances() {
+  const warnings = [];
+  const balances = {};
+  await Promise.all(ssoChars.map(async rec => {
+    if (!charHasScope(rec, WALLET_SCOPE)) return;
+    const token = await getAccessTokenFor(rec);
+    if (!token) return;   // stale session already warned about by the orders fetch
+    const r = await esiFetchRetry(`${ESI}/characters/${rec.characterId}/wallet/?datasource=tranquility`,
+      { init: { headers: { Authorization: `Bearer ${token}` } } });
+    if (r?.ok) balances[rec.characterId] = await r.json();   // endpoint returns a bare number
+    else warnings.push(`${rec.characterName}: wallet balance unavailable`);
+  }));
+  return { balances, warnings };
 }
 
 
