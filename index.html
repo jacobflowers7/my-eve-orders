@@ -454,10 +454,17 @@ const STRUCTURE_SCOPE = "esi-universe.read_structures.v1";
 // a character missing it still loads orders, it just can't see those books.
 const MARKET_STRUCTURE_SCOPE = "esi-markets.structure_markets.v1";
 
+// Corp wallet balances for the dashboard. Optional like STRUCTURE_SCOPE — and
+// even when granted, ESI serves corp wallets only to characters holding the
+// in-game Accountant/Junior Accountant role (403 otherwise). Characters logged
+// in before this scope existed keep working; they just contribute no corp
+// balance until they log in again.
+const CORP_WALLET_SCOPE = "esi-wallet.read_corporation_wallets.v1";
+
 // The two scopes a character must have for its orders and cost basis to load.
 const ORDERS_SCOPES = [ORDERS_SCOPE, WALLET_SCOPE];
 
-const SSO_SCOPES = [...ORDERS_SCOPES, STRUCTURE_SCOPE, MARKET_STRUCTURE_SCOPE].join(" ");
+const SSO_SCOPES = [...ORDERS_SCOPES, STRUCTURE_SCOPE, MARKET_STRUCTURE_SCOPE, CORP_WALLET_SCOPE].join(" ");
 
 // Not a secret — this is a PKCE public client, so nothing sensitive hinges on
 // this value being hidden (the code_verifier is what actually secures the
@@ -1006,6 +1013,52 @@ async function fetchWalletBalances() {
     warnings.push(`${rec.characterName}: wallet balance unavailable`);
   }));
   return { balances, warnings };
+}
+
+
+// Corp balances: discover each character's corp (public endpoint), dedupe, then
+// read wallets via the first member whose token works. A 403 is the expected
+// "no Accountant role / scope not yet granted" case and stays silent; a corp
+// that failed for any other reason gets one warning. Corp names are public.
+async function fetchCorpBalances() {
+  const corpMembers = new Map();   // corpId → member recs, roster order
+  await Promise.all(ssoChars.map(async rec => {
+    // Parse inside the try so a malformed body drops this character's corp
+    // instead of rejecting the whole discovery batch.
+    let corpId = null;
+    try {
+      const r = await esiFetchRetry(`${ESI}/characters/${rec.characterId}/?datasource=tranquility`);
+      if (r?.ok) corpId = (await r.json())?.corporation_id;
+    } catch {}
+    // Player corps start at 98M; NPC corp wallets always 403 and burn error budget.
+    if (corpId >= 98000000) corpMembers.set(corpId, [...(corpMembers.get(corpId) ?? []), rec]);
+  }));
+
+  const corps = [], warnings = [];
+  await Promise.all([...corpMembers].map(async ([corpId, recs]) => {
+    let balance = null, non403 = false;
+    for (const rec of recs.filter(rc => charHasScope(rc, CORP_WALLET_SCOPE))) {
+      const token = await getAccessTokenFor(rec);
+      if (!token) continue;
+      try {
+        const r = await esiFetchRetry(`${ESI}/corporations/${corpId}/wallets/?datasource=tranquility`,
+          { init: { headers: { Authorization: `Bearer ${token}` } } });
+        if (r?.ok) { balance = (await r.json()).reduce((s, d) => s + (d.balance ?? 0), 0); break; }
+        if (r?.status !== 403) non403 = true;
+      } catch { non403 = true; }
+    }
+    if (balance === null) {
+      if (non403) warnings.push(`Corp ${corpId}: wallets unavailable`);
+      return;   // silent when it's only missing roles / an un-granted scope
+    }
+    let name = null;
+    try {
+      const nr = await esiFetchRetry(`${ESI}/corporations/${corpId}/?datasource=tranquility`);
+      if (nr?.ok) name = (await nr.json())?.name;
+    } catch {}
+    corps.push({ corpId, name: name ?? `Corp ${corpId}`, balance });
+  }));
+  return { corps: corps.sort((a, b) => a.corpId - b.corpId), warnings };
 }
 
 
