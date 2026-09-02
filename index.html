@@ -320,6 +320,11 @@
     <span id="sso-char-list" style="display:none;align-items:center;gap:6px"></span>
   </div>
   </fieldset>
+  <fieldset class="ctl-section" id="dash-section" style="flex:1;align-self:stretch">
+  <legend>Wallets &amp; Activity</legend>
+  <div id="dash-wallets" style="min-width:210px"></div>
+  <div id="dash-activity" style="min-width:260px"></div>
+  </fieldset>
 </div>
 
 <div id="orders-filter-bar" style="display:flex;padding:10px 24px;background:var(--bg);border-bottom:1px solid var(--border);gap:12px;align-items:center;flex-wrap:wrap">
@@ -567,6 +572,99 @@ function saveCorpBuysSetting() {
   renderOrdersTable();
 }
 
+// ── Dashboard: wallets & activity ────────────────────────────────────────────
+// Balances and corp list arrive with each refresh; activity stats come from
+// the durable ledger, so they render on page load before any network I/O.
+const DASH_CORP_INC_KEY = "myOrders.dashboard.includeCorp";
+const DASH_CORP_SEL_KEY = "myOrders.dashboard.corps";
+let dashIncludeCorp = true;      // corp ISK in Total + corp-funded fills in Activity
+let dashCorpSel = {};            // corpId → false when excluded; missing = included
+let dashCorpPopoverOpen = false;
+let dashState = { balances: {}, corps: [] };
+
+function dashCorpIncluded(corpId) { return dashCorpSel[corpId] !== false; }
+
+function loadDashSettings() {
+  dashIncludeCorp = localStorage.getItem(DASH_CORP_INC_KEY) !== "0";   // default ON
+  try { dashCorpSel = JSON.parse(localStorage.getItem(DASH_CORP_SEL_KEY)) ?? {}; } catch { dashCorpSel = {}; }
+}
+
+function saveDashIncludeCorp(on) {
+  dashIncludeCorp = !!on;
+  try { localStorage.setItem(DASH_CORP_INC_KEY, dashIncludeCorp ? "1" : "0"); } catch {}
+  renderDashboard();
+}
+
+function setDashCorpIncluded(corpId, on) {
+  dashCorpSel[corpId] = !!on;
+  try { localStorage.setItem(DASH_CORP_SEL_KEY, JSON.stringify(dashCorpSel)); } catch {}
+  renderDashboard();
+}
+
+function toggleDashCorpPopover() { dashCorpPopoverOpen = !dashCorpPopoverOpen; renderDashboard(); }
+
+function renderDashboard() {
+  const wEl = document.getElementById("dash-wallets");
+  const aEl = document.getElementById("dash-activity");
+  if (!wEl || !aEl) return;
+
+  const iskCell = n =>
+    `<td style="text-align:right;font-family:monospace;padding:1px 0 1px 14px"` +
+    ` title="${n == null ? "" : escHtml(fmt(n) + " ISK")}">${n == null ? "—" : formatISK(n)}</td>`;
+
+  // Wallets: one row per character, Total, then the corp row when any corp is readable.
+  const rows = [];
+  let total = 0;
+  for (const rec of ssoChars) {
+    const bal = dashState.balances[rec.characterId];
+    if (bal != null) total += bal;
+    rows.push(`<tr><td style="color:var(--text-dim);padding:1px 0">${escHtml(rec.characterName)}</td>${iskCell(bal)}</tr>`);
+  }
+  const inclCorps = dashState.corps.filter(c => dashCorpIncluded(c.corpId));
+  const corpSum = inclCorps.reduce((s, c) => s + c.balance, 0);
+  if (dashIncludeCorp) total += corpSum;
+  rows.push(`<tr><td style="border-top:1px solid var(--border);padding:3px 0 1px;color:var(--gold);font-weight:600">Total</td>` +
+    `<td style="border-top:1px solid var(--border);text-align:right;font-family:monospace;padding:3px 0 1px 14px;` +
+    `color:var(--gold);font-weight:600" title="${escHtml(fmt(total) + " ISK")}">${formatISK(total)}</td></tr>`);
+  if (dashState.corps.length) {
+    const pop = !dashCorpPopoverOpen ? "" :
+      `<div style="position:absolute;left:0;bottom:100%;z-index:100;background:var(--bg3);` +
+      `border:1px solid var(--border);border-radius:3px;padding:8px 10px;white-space:nowrap">` +
+      dashState.corps.map(c =>
+        `<label style="display:flex;gap:6px;align-items:center;font-size:11px">` +
+        `<input type="checkbox" ${dashCorpIncluded(c.corpId) ? "checked" : ""}` +
+        ` onchange="setDashCorpIncluded(${c.corpId}, this.checked)" style="width:auto"/>` +
+        `${escHtml(c.name)} <span style="color:var(--text-dim)">${formatISK(c.balance)}</span></label>`).join("") +
+      `</div>`;
+    rows.push(`<tr><td style="position:relative;color:var(--text-dim);padding:1px 0">` +
+      `<input type="checkbox" ${dashIncludeCorp ? "checked" : ""} onchange="saveDashIncludeCorp(this.checked)"` +
+      ` style="width:auto;vertical-align:middle"` +
+      ` title="Include corp ISK in Total and corp-funded sales in Activity"/>` +
+      ` Corp (${inclCorps.length}) <button onclick="toggleDashCorpPopover()" style="background:none;border:none;` +
+      `color:var(--text-dim);cursor:pointer;font-size:11px;padding:0" title="Choose which corps count">⚙</button>` +
+      `${pop}</td>${iskCell(corpSum)}</tr>`);
+  }
+  wEl.innerHTML = `<table style="border-collapse:collapse;font-size:12px">${rows.join("")}</table>`;
+
+  // Activity (EVE time = UTC), straight from the ledger already in memory.
+  const stats = computeActivityStats(ordersState.ledger ?? [], currentFees(), Date.now(),
+                                     { includeCorpSells: dashIncludeCorp });
+  const head = `style="color:var(--text-dim);font-size:9px;text-transform:uppercase;letter-spacing:1px;text-align:right;padding-left:18px"`;
+  const num  = `style="text-align:right;font-family:monospace;padding:1px 0 1px 18px"`;
+  const badge = ` <span title="Some sales lack full cost-basis history — profit covers only the units it could price"` +
+                ` style="color:#e0a040;font-size:10px">partial</span>`;
+  const profitCell = w =>
+    `<td ${num}><span style="color:${w.profit >= 0 ? "var(--green)" : "var(--red)"}"` +
+    ` title="${escHtml(fmt(w.profit) + " ISK")}">${fmtIskSigned(w.profit)}</span>${w.profitPartial ? badge : ""}</td>`;
+  aEl.innerHTML =
+    `<table style="border-collapse:collapse;font-size:12px">` +
+    `<tr><td></td><td ${head}>Today</td><td ${head}>Last 7 Days</td></tr>` +
+    `<tr><td style="color:var(--text-dim)">Sales</td><td ${num}>${stats.today.fills} fills</td>` +
+    `<td ${num}>${stats.week.fills} fills</td></tr>` +
+    `<tr><td style="color:var(--text-dim)">Revenue</td>${iskCell(stats.today.revenue)}${iskCell(stats.week.revenue)}</tr>` +
+    `<tr><td style="color:var(--text-dim)">Profit</td>${profitCell(stats.today)}${profitCell(stats.week)}</tr></table>`;
+}
+
 function saveFees() {
   const { brokerFee, salesTax } = currentFees();
   try {
@@ -744,6 +842,7 @@ function ssoLogout(characterId = sso?.characterId) {
 
 
 function updateSsoUI() {
+  renderDashboard();
   const list = document.getElementById("sso-char-list");
   if (!list) return;
   list.style.display = ssoChars.length ? "inline-flex" : "none";
@@ -1635,8 +1734,10 @@ async function refreshOrders() {
   try {
     // Orders and wallet history are independent; refresh-token races between
     // them are prevented by the in-flight dedup in getAccessTokenFor.
-    const [{ orders, warnings: ow }, { ledger, warnings: ww }] =
-      await Promise.all([fetchAllCharacterOrders(), syncAllWalletTx()]);
+    const [{ orders, warnings: ow }, { ledger, warnings: ww }, wallets, corpRes] =
+      await Promise.all([fetchAllCharacterOrders(), syncAllWalletTx(),
+                         fetchWalletBalances(), fetchCorpBalances()]);
+    dashState = { balances: wallets.balances, corps: corpRes.corps };
 
     // Everything below only needs `orders`, and none of the four depend on each
     // other — one round trip instead of four.
@@ -1663,7 +1764,7 @@ async function refreshOrders() {
       regionBooks: region.regionBooks,
       names,
       typeNames: Object.fromEntries(typeIds.map(t => [t, names[t] ?? `Type ${t}`])),
-      warnings: [...ow, ...ww, ...region.warnings],
+      warnings: [...ow, ...ww, ...wallets.warnings, ...corpRes.warnings, ...region.warnings],
       loadedAt: Date.now(),
     };
   } catch (e) {
@@ -1924,6 +2025,7 @@ function exportOrdersToExcel() {
 
 
 function renderOrdersTable() {
+  renderDashboard();
   const tbody = document.getElementById("orders-tbody");
   const table = document.getElementById("orders-table");
   if (!tbody) return;
@@ -2085,6 +2187,7 @@ function renderOrdersTable() {
 
   loadFees();
   loadCorpBuysSetting();
+  loadDashSettings();
   loadSsoChars();
   updateSsoUI();
   await handleSsoCallback();
@@ -2101,6 +2204,11 @@ function renderOrdersTable() {
     if (e.key !== "Enter" && e.key !== " ") return;
     if (e.target?.matches?.("th[onclick]")) { e.preventDefault(); e.target.click(); }
   });
+
+  // Activity stats need no network: the ledger is durable in IndexedDB, so the
+  // dashboard renders on load. Balances stay "—" until the first refresh.
+  const { merged } = mergeWalletTx(await idbTxAll(), []);
+  if (!ordersState.ledger.length) ordersState.ledger = merged;
 
   renderOrdersTable();
 })();
