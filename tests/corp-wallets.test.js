@@ -18,7 +18,7 @@ const CORP_SCOPES = `[...ORDERS_SCOPES, CORP_WALLET_SCOPE]`;
                                             44: 1000009,  55: 98000003, 66: 98000004 }[char[1]] });
     if (u.includes("/corporations/98000001/wallets/"))
       return auth === "Bearer tok22"
-        ? ok([{ division: 1, balance: 100 }, { division: 2, balance: 50 }])
+        ? ok([{ division: 1, balance: 100 }, { division: 2, balance: 50 }, { division: 3, balance: "junk" }])
         : err(403);                                   // char 11 lacks the in-game role
     if (u.includes("/corporations/98000002/wallets/")) return err(403);   // nobody has the role
     if (u.includes("/corporations/98000003/wallets/")) return err(500);   // real failure

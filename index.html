@@ -1106,8 +1106,12 @@ async function fetchWalletBalances() {
       const r = await esiFetchRetry(`${ESI}/characters/${rec.characterId}/wallet/?datasource=tranquility`,
         { init: { headers: { Authorization: `Bearer ${token}` } } });
       // Endpoint returns a bare number; parse inside the try so a malformed
-      // body degrades to the warning instead of rejecting the whole batch.
-      if (r?.ok) { balances[rec.characterId] = await r.json(); return; }
+      // body degrades to the warning instead of rejecting the whole batch,
+      // and type-check it so a non-number body can't poison the totals.
+      if (r?.ok) {
+        const v = await r.json();
+        if (typeof v === "number" && Number.isFinite(v)) { balances[rec.characterId] = v; return; }
+      }
     } catch {}
     warnings.push(`${rec.characterName}: wallet balance unavailable`);
   }));
@@ -1120,7 +1124,7 @@ async function fetchWalletBalances() {
 // "no Accountant role / scope not yet granted" case and stays silent; a corp
 // that failed for any other reason gets one warning. Corp names are public.
 async function fetchCorpBalances() {
-  const corpMembers = new Map();   // corpId → member recs, roster order
+  const corpMembers = new Map();   // corpId → member recs (fetch-completion order — first workable member wins)
   await Promise.all(ssoChars.map(async rec => {
     // Parse inside the try so a malformed body drops this character's corp
     // instead of rejecting the whole discovery batch.
@@ -1142,7 +1146,7 @@ async function fetchCorpBalances() {
       try {
         const r = await esiFetchRetry(`${ESI}/corporations/${corpId}/wallets/?datasource=tranquility`,
           { init: { headers: { Authorization: `Bearer ${token}` } } });
-        if (r?.ok) { balance = (await r.json()).reduce((s, d) => s + (d.balance ?? 0), 0); break; }
+        if (r?.ok) { balance = (await r.json()).reduce((s, d) => s + (Number(d.balance) || 0), 0); break; }
         if (r?.status !== 403) non403 = true;
       } catch { non403 = true; }
     }
@@ -1346,8 +1350,8 @@ function computeActivityStats(rows, fees, nowMs, { includeCorpSells = true } = {
     const avg = covered > 0 ? b.totalCost / b.unitsOnHand : null;
 
     if (includeCorpSells || r.isPersonal !== false) {
-      const t = Date.parse(r.date);
-      for (const w of [today, week]) {
+      const t = Date.parse(r.date);   // NaN (unparseable date) must not count into any window
+      for (const w of Number.isFinite(t) ? [today, week] : []) {
         if (t < (w === today ? todayStart : weekStart)) continue;
         w.fills   += 1;
         w.revenue += r.quantity * r.unitPrice;
@@ -1734,10 +1738,13 @@ async function refreshOrders() {
   try {
     // Orders and wallet history are independent; refresh-token races between
     // them are prevented by the in-flight dedup in getAccessTokenFor.
-    const [{ orders, warnings: ow }, { ledger, warnings: ww }, wallets, corpRes] =
-      await Promise.all([fetchAllCharacterOrders(), syncAllWalletTx(),
-                         fetchWalletBalances(), fetchCorpBalances()]);
-    dashState = { balances: wallets.balances, corps: corpRes.corps };
+    // Dashboard fetches start immediately but never gate the table: the
+    // table renders as soon as orders/books resolve, and the dashboard data
+    // + warnings merge in when they land (spec: dashboard failures never
+    // block or delay the orders refresh).
+    const dashFetch = Promise.all([fetchWalletBalances(), fetchCorpBalances()]);
+    const [{ orders, warnings: ow }, { ledger, warnings: ww }] =
+      await Promise.all([fetchAllCharacterOrders(), syncAllWalletTx()]);
 
     // Everything below only needs `orders`, and none of the four depend on each
     // other — one round trip instead of four.
@@ -1764,9 +1771,13 @@ async function refreshOrders() {
       regionBooks: region.regionBooks,
       names,
       typeNames: Object.fromEntries(typeIds.map(t => [t, names[t] ?? `Type ${t}`])),
-      warnings: [...ow, ...ww, ...wallets.warnings, ...corpRes.warnings, ...region.warnings],
+      warnings: [...ow, ...ww, ...region.warnings],
       loadedAt: Date.now(),
     };
+    renderOrdersTable();   // table goes live before the dashboard data lands
+    const [wallets, corpRes] = await dashFetch;
+    dashState = { balances: wallets.balances, corps: corpRes.corps };
+    ordersState.warnings.push(...wallets.warnings, ...corpRes.warnings);
   } catch (e) {
     ordersState.warnings = [`Refresh failed: ${e.message} — showing last data`];
   }
