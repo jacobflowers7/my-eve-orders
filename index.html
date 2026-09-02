@@ -885,6 +885,9 @@ function formatISK(n) {
   return n.toFixed(0);
 }
 
+// Profit can be negative; formatISK assumes magnitudes.
+const fmtIskSigned = n => (n < 0 ? "−" : "") + formatISK(Math.abs(n));
+
 
 function fmt(n) {
   return n.toLocaleString("en-US", { maximumFractionDigits: 0 });
@@ -1128,6 +1131,59 @@ function computeCostBasis(rows) {
   return basis;
 }
 
+// ── Activity stats engine ────────────────────────────────────────────────────
+// Realized per-window trading stats for the dashboard, from the same ledger
+// replay computeCostBasis performs: the avg cost backing each sell's profit is
+// the running weighted average at that moment, so the whole ledger replays
+// even though only fills inside a window are counted. Windows are EVE days
+// (UTC): today = since 00:00 UTC, week = trailing 7 UTC days. Buy-side basis
+// eligibility follows basisEligibleTx (the corp-buys setting); the separate
+// includeCorpSells option is the dashboard's corp toggle for what gets
+// *counted*. A counted corp sell with no basis in the replay contributes
+// revenue but unknown profit, so it flags the window partial.
+function computeActivityStats(rows, fees, nowMs, { includeCorpSells = true } = {}) {
+  const d = new Date(nowMs);
+  const todayStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const weekStart  = todayStart - 6 * 86400e3;
+  const today = { fills: 0, revenue: 0, profit: 0, profitPartial: false };
+  const week  = { fills: 0, revenue: 0, profit: 0, profitPartial: false };
+
+  const state = {};   // typeId → running { unitsOnHand, totalCost }, mirroring computeCostBasis
+  const sorted = [...rows].sort((a, b) =>
+    a.date < b.date ? -1 : a.date > b.date ? 1 : a.transactionId - b.transactionId);
+
+  for (const r of sorted) {
+    if (!(r.quantity > 0)) continue;
+    const inBasis = basisEligibleTx(r);
+
+    if (r.isBuy) {
+      if (!inBasis) continue;
+      const b = (state[r.typeId] ??= { unitsOnHand: 0, totalCost: 0 });
+      b.unitsOnHand += r.quantity;
+      b.totalCost   += r.quantity * r.unitPrice;
+      continue;
+    }
+
+    const b = inBasis ? (state[r.typeId] ??= { unitsOnHand: 0, totalCost: 0 }) : null;
+    const covered = b ? Math.min(r.quantity, b.unitsOnHand) : 0;
+    const avg = covered > 0 ? b.totalCost / b.unitsOnHand : null;
+
+    if (includeCorpSells || r.isPersonal !== false) {
+      const t = Date.parse(r.date);
+      for (const w of [today, week]) {
+        if (t < (w === today ? todayStart : weekStart)) continue;
+        w.fills   += 1;
+        w.revenue += r.quantity * r.unitPrice;
+        if (covered > 0) w.profit += covered * (r.unitPrice * (1 - fees.brokerFee - fees.salesTax) - avg);
+        if (covered < r.quantity) w.profitPartial = true;
+      }
+    }
+
+    if (covered > 0) { b.totalCost -= avg * covered; b.unitsOnHand -= covered; }
+    if (b && b.unitsOnHand === 0) b.totalCost = 0;   // avoid float dust, same as computeCostBasis
+  }
+  return { today, week };
+}
 
 // Every buy row still "in" the current weighted average for one type: every
 // buy since the position last fully cleared to zero. Once units-on-hand hits
