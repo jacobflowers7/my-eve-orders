@@ -53,6 +53,9 @@ const { run, check, summary } = require("./harness");
       sellMarginFormula: byCell(5, 16),
       buyMarginFormula: byCell(6, 16),
       noBasisMarginFormula: byCell(7, 16),
+      sellEstProfitFormula: byCell(5, 17),
+      buyEstProfitFormula: byCell(6, 17),
+      noBasisEstProfitFormula: byCell(7, 17),
       vsJitaFormula: byCell(5, 9),
       vsBestFormula: byCell(5, 11),
       deltaFormula: byCell(5, 14),
@@ -60,10 +63,10 @@ const { run, check, summary } = require("./harness");
     };
   `);
 
-  check("header row matches the 17-column layout", JSON.stringify(r2.header) ===
+  check("header row matches the 18-column layout", JSON.stringify(r2.header) ===
     JSON.stringify(["Character","Item","Side","Station","Qty Remain","Qty Total","Your Price",
       "Avg Cost","Jita Ref","vs Jita %","Best Offer","vs Best %","Markup %",
-      "Target","Delta","Impact","Margin %"]));
+      "Target","Delta","Impact","Margin %","Est. Profit"]));
   check("settings row holds global markup and fees as percent values",
         JSON.stringify(r2.settingsRow) === '["Global Markup %",20,"Broker Fee %",3,"Sales Tax %",3]');
 
@@ -87,6 +90,10 @@ const { run, check, summary } = require("./harness");
   check("sell margin blanks on a non-positive avg cost", r2.sellMarginFormula.f.includes("H6<=0"));
   check("buy margin needs no cost basis, just the reference", r2.buyMarginFormula.f === 'IF(I7="","",(I7-G7)/I7*100)');
   check("no-basis sell gets a literal n/a, not a formula", r2.noBasisRow[16] === "n/a" && r2.noBasisMarginFormula === undefined);
+  check("sell est. profit (known basis) is net proceeds minus avg cost, times qty remain",
+        r2.sellEstProfitFormula.f === 'IF(OR(G6="",H6="",H6<=0,I6=""),"",((G6*(1-$D$3/100-$F$3/100))-H6)*E6)');
+  check("buy orders get no est. profit — nothing has been sold", r2.buyEstProfitFormula === undefined && r2.buyDataRow[17] === "");
+  check("no-basis sell gets a literal n/a for est. profit too", r2.noBasisRow[17] === "n/a" && r2.noBasisEstProfitFormula === undefined);
   check("vs Jita % formula is direction-agnostic (price vs ref)", r2.vsJitaFormula.f === 'IF(I6="","",(G6-I6)/I6*100)');
   check("vs Best % formula references the best-offer column", r2.vsBestFormula.f === 'IF(K6="","",(G6-K6)/K6*100)');
   check("delta formula is target minus price", r2.deltaFormula.f === 'IF(N6="","",N6-G6)');

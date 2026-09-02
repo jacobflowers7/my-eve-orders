@@ -46,16 +46,22 @@ const { run, check, summary } = require("./harness");
   check("impact = |delta|*qty", r.sellRow.impact === 100);
   check("sell margin net of fees", Math.abs(r.sellRow.marginPct - 22.2) < 1e-9);
   check("zero fees give gross margin", Math.abs(r.zeroFees.marginPct - 30) < 1e-9);
+  // estProfit = (net - avgCost) * qty = (122.2 - 100) * 10 = 222
+  check("sell est. profit = (net - avgCost) * qty remain", Math.abs(r.sellRow.estProfit - 222) < 1e-9);
 
   // buy: target = 100*0.8 = 80; delta = 80-90 = -10; margin = (100-90)/100*100 = 10 (under ref = good)
   check("buy target from ref*(1-markup)", r.buyRow.target === 80);
   check("buy margin = % under reference", r.buyRow.marginPct === 10);
+  check("buy orders get no est. profit — nothing has been sold", r.buyRow.estProfit === null);
 
   check("partial basis suppresses margin", r.partial.marginPct === null && r.partial.basisState === "partial");
+  check("partial basis suppresses est. profit too", r.partial.estProfit === null);
   check("unknown basis: n/a margin, avgCost null", r.unknown.marginPct === null &&
         r.unknown.avgCost === null && r.unknown.basisState === "unknown");
+  check("unknown basis: est. profit also null", r.unknown.estProfit === null);
   check("no ref: target/delta/margin all null, still listed", r.noRef.target === null &&
         r.noRef.delta === null && r.noRef.marginPct === null && r.noRef.impact === 0);
+  check("no ref: est. profit also null", r.noRef.estProfit === null);
 
   // vsJitaPct: current price vs Jita ref, direction-agnostic, no cost-basis dependency —
   // price=130, ref=100 → (130-100)/100*100 = 30 (priced 30% above Jita)

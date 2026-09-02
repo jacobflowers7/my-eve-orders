@@ -320,6 +320,11 @@
     <span id="sso-char-list" style="display:none;align-items:center;gap:6px"></span>
   </div>
   </fieldset>
+  <fieldset class="ctl-section" id="dash-section" style="flex:1;align-self:stretch">
+  <legend>Wallets &amp; Activity</legend>
+  <div id="dash-wallets" style="min-width:210px"></div>
+  <div id="dash-activity" style="min-width:260px"></div>
+  </fieldset>
 </div>
 
 <div id="orders-filter-bar" style="display:flex;padding:10px 24px;background:var(--bg);border-bottom:1px solid var(--border);gap:12px;align-items:center;flex-wrap:wrap">
@@ -349,12 +354,13 @@
         <th class="col-num" onclick="setOrdersSort('avgCost')" title="Weighted-average price paid, pooled across all characters">Avg Cost</th>
         <th class="col-num" onclick="setOrdersSort('ref')" title="Jita 4-4 sell price — 5% volume-weighted percentile of the sell book, so single-unit troll orders don't set it. Falls back to the buy side only when nothing is for sale at all.">Jita Ref</th>
         <th class="col-num" onclick="setOrdersSort('vsJita')" title="Your current posted price vs the Jita reference, right now — (price − ref) / ref × 100. Positive = priced above Jita. No cost-basis needed, so this stays populated even when Margin % is n/a.">vs Jita %</th>
-        <th class="col-num" onclick="setOrdersSort('vsBest')" title="Your price vs the BEST live offer on your own side (lowest sell / highest buy) at this exact station right now. 0% means you're tied for the best price against real competitors; &quot;solo&quot; means nobody else is even listed there. Sells read positive (how far above the cheapest you are), buys negative (how far below the top bid). Blank only when the station's book can't be read at all.">vs Best %</th>
+        <th class="col-num" onclick="setOrdersSort('vsBest')" title="Your price vs the BEST live offer on your own side (lowest sell / highest buy) at this exact station right now. 0% means you're tied for the best price against real competitors; &quot;solo&quot; means nobody else is even listed there. Sells read positive (how far above the cheapest you are), buys negative (how far below the top bid). Blank only when the station's book can't be read at all.">vs Best %<br><span id="orders-filter-vsbest" onclick="event.stopPropagation()"></span></th>
         <th class="col-num" title="Per-item markup % — blank uses the global rule">Markup %</th>
         <th class="col-num" onclick="setOrdersSort('target')" title="Ref × (1±markup). Click a value to copy it">Target</th>
         <th class="col-num" onclick="setOrdersSort('delta')" title="Target − your price: the amount to adjust your price by to hit Target. Click to copy">Δ Price</th>
         <th class="col-num sort-desc" onclick="setOrdersSort('impact')" title="|Δ| × qty — how much ISK is at stake in repricing this order">Impact</th>
         <th class="col-num" onclick="setOrdersSort('margin')" title="Sells: net proceeds vs avg cost. Buys: % under Jita ref">Margin %</th>
+        <th class="col-num" onclick="setOrdersSort('estProfit')" title="Sells only: (net proceeds − avg cost) × qty remaining. Requires a known cost basis, so this is blank wherever Margin % is n/a.">Est. Profit</th>
       </tr>
     </thead>
     <tbody id="orders-tbody"></tbody>
@@ -453,10 +459,17 @@ const STRUCTURE_SCOPE = "esi-universe.read_structures.v1";
 // a character missing it still loads orders, it just can't see those books.
 const MARKET_STRUCTURE_SCOPE = "esi-markets.structure_markets.v1";
 
+// Corp wallet balances for the dashboard. Optional like STRUCTURE_SCOPE — and
+// even when granted, ESI serves corp wallets only to characters holding the
+// in-game Accountant/Junior Accountant role (403 otherwise). Characters logged
+// in before this scope existed keep working; they just contribute no corp
+// balance until they log in again.
+const CORP_WALLET_SCOPE = "esi-wallet.read_corporation_wallets.v1";
+
 // The two scopes a character must have for its orders and cost basis to load.
 const ORDERS_SCOPES = [ORDERS_SCOPE, WALLET_SCOPE];
 
-const SSO_SCOPES = [...ORDERS_SCOPES, STRUCTURE_SCOPE, MARKET_STRUCTURE_SCOPE].join(" ");
+const SSO_SCOPES = [...ORDERS_SCOPES, STRUCTURE_SCOPE, MARKET_STRUCTURE_SCOPE, CORP_WALLET_SCOPE].join(" ");
 
 // Not a secret — this is a PKCE public client, so nothing sensitive hinges on
 // this value being hidden (the code_verifier is what actually secures the
@@ -557,6 +570,99 @@ function saveCorpBuysSetting() {
   // so recompute in place rather than making the user hit Refresh.
   ordersState.basis = computeCostBasis(ordersState.ledger);
   renderOrdersTable();
+}
+
+// ── Dashboard: wallets & activity ────────────────────────────────────────────
+// Balances and corp list arrive with each refresh; activity stats come from
+// the durable ledger, so they render on page load before any network I/O.
+const DASH_CORP_INC_KEY = "myOrders.dashboard.includeCorp";
+const DASH_CORP_SEL_KEY = "myOrders.dashboard.corps";
+let dashIncludeCorp = true;      // corp ISK in Total + corp-funded fills in Activity
+let dashCorpSel = {};            // corpId → false when excluded; missing = included
+let dashCorpPopoverOpen = false;
+let dashState = { balances: {}, corps: [] };
+
+function dashCorpIncluded(corpId) { return dashCorpSel[corpId] !== false; }
+
+function loadDashSettings() {
+  dashIncludeCorp = localStorage.getItem(DASH_CORP_INC_KEY) !== "0";   // default ON
+  try { dashCorpSel = JSON.parse(localStorage.getItem(DASH_CORP_SEL_KEY)) ?? {}; } catch { dashCorpSel = {}; }
+}
+
+function saveDashIncludeCorp(on) {
+  dashIncludeCorp = !!on;
+  try { localStorage.setItem(DASH_CORP_INC_KEY, dashIncludeCorp ? "1" : "0"); } catch {}
+  renderDashboard();
+}
+
+function setDashCorpIncluded(corpId, on) {
+  dashCorpSel[corpId] = !!on;
+  try { localStorage.setItem(DASH_CORP_SEL_KEY, JSON.stringify(dashCorpSel)); } catch {}
+  renderDashboard();
+}
+
+function toggleDashCorpPopover() { dashCorpPopoverOpen = !dashCorpPopoverOpen; renderDashboard(); }
+
+function renderDashboard() {
+  const wEl = document.getElementById("dash-wallets");
+  const aEl = document.getElementById("dash-activity");
+  if (!wEl || !aEl) return;
+
+  const iskCell = n =>
+    `<td style="text-align:right;font-family:monospace;padding:1px 0 1px 14px"` +
+    ` title="${n == null ? "" : escHtml(fmt(n) + " ISK")}">${n == null ? "—" : formatISK(n)}</td>`;
+
+  // Wallets: one row per character, Total, then the corp row when any corp is readable.
+  const rows = [];
+  let total = 0;
+  for (const rec of ssoChars) {
+    const bal = dashState.balances[rec.characterId];
+    if (bal != null) total += bal;
+    rows.push(`<tr><td style="color:var(--text-dim);padding:1px 0">${escHtml(rec.characterName)}</td>${iskCell(bal)}</tr>`);
+  }
+  const inclCorps = dashState.corps.filter(c => dashCorpIncluded(c.corpId));
+  const corpSum = inclCorps.reduce((s, c) => s + c.balance, 0);
+  if (dashIncludeCorp) total += corpSum;
+  rows.push(`<tr><td style="border-top:1px solid var(--border);padding:3px 0 1px;color:var(--gold);font-weight:600">Total</td>` +
+    `<td style="border-top:1px solid var(--border);text-align:right;font-family:monospace;padding:3px 0 1px 14px;` +
+    `color:var(--gold);font-weight:600" title="${escHtml(fmt(total) + " ISK")}">${formatISK(total)}</td></tr>`);
+  if (dashState.corps.length) {
+    const pop = !dashCorpPopoverOpen ? "" :
+      `<div style="position:absolute;left:0;bottom:100%;z-index:100;background:var(--bg3);` +
+      `border:1px solid var(--border);border-radius:3px;padding:8px 10px;white-space:nowrap">` +
+      dashState.corps.map(c =>
+        `<label style="display:flex;gap:6px;align-items:center;font-size:11px">` +
+        `<input type="checkbox" ${dashCorpIncluded(c.corpId) ? "checked" : ""}` +
+        ` onchange="setDashCorpIncluded(${c.corpId}, this.checked)" style="width:auto"/>` +
+        `${escHtml(c.name)} <span style="color:var(--text-dim)">${formatISK(c.balance)}</span></label>`).join("") +
+      `</div>`;
+    rows.push(`<tr><td style="position:relative;color:var(--text-dim);padding:1px 0">` +
+      `<input type="checkbox" ${dashIncludeCorp ? "checked" : ""} onchange="saveDashIncludeCorp(this.checked)"` +
+      ` style="width:auto;vertical-align:middle"` +
+      ` title="Include corp ISK in Total and corp-funded sales in Activity"/>` +
+      ` Corp (${inclCorps.length}) <button onclick="toggleDashCorpPopover()" style="background:none;border:none;` +
+      `color:var(--text-dim);cursor:pointer;font-size:11px;padding:0" title="Choose which corps count">⚙</button>` +
+      `${pop}</td>${iskCell(corpSum)}</tr>`);
+  }
+  wEl.innerHTML = `<table style="border-collapse:collapse;font-size:12px">${rows.join("")}</table>`;
+
+  // Activity (EVE time = UTC), straight from the ledger already in memory.
+  const stats = computeActivityStats(ordersState.ledger ?? [], currentFees(), Date.now(),
+                                     { includeCorpSells: dashIncludeCorp });
+  const head = `style="color:var(--text-dim);font-size:9px;text-transform:uppercase;letter-spacing:1px;text-align:right;padding-left:18px"`;
+  const num  = `style="text-align:right;font-family:monospace;padding:1px 0 1px 18px"`;
+  const badge = ` <span title="Some sales lack full cost-basis history — profit covers only the units it could price"` +
+                ` style="color:#e0a040;font-size:10px">partial</span>`;
+  const profitCell = w =>
+    `<td ${num}><span style="color:${w.profit >= 0 ? "var(--green)" : "var(--red)"}"` +
+    ` title="${escHtml(fmt(w.profit) + " ISK")}">${fmtIskSigned(w.profit)}</span>${w.profitPartial ? badge : ""}</td>`;
+  aEl.innerHTML =
+    `<table style="border-collapse:collapse;font-size:12px">` +
+    `<tr><td></td><td ${head}>Today</td><td ${head}>Last 7 Days</td></tr>` +
+    `<tr><td style="color:var(--text-dim)">Sales</td><td ${num}>${stats.today.fills} fills</td>` +
+    `<td ${num}>${stats.week.fills} fills</td></tr>` +
+    `<tr><td style="color:var(--text-dim)">Revenue</td>${iskCell(stats.today.revenue)}${iskCell(stats.week.revenue)}</tr>` +
+    `<tr><td style="color:var(--text-dim)">Profit</td>${profitCell(stats.today)}${profitCell(stats.week)}</tr></table>`;
 }
 
 function saveFees() {
@@ -736,6 +842,7 @@ function ssoLogout(characterId = sso?.characterId) {
 
 
 function updateSsoUI() {
+  renderDashboard();
   const list = document.getElementById("sso-char-list");
   if (!list) return;
   list.style.display = ssoChars.length ? "inline-flex" : "none";
@@ -852,10 +959,10 @@ let ESI_RETRY_MIN_DELAY_MS = 1000; // overridable in tests
 const sleepMs = ms => new Promise(res => setTimeout(res, ms));
 
 
-async function esiFetchRetry(url, { retries = 3 } = {}) {
+async function esiFetchRetry(url, { retries = 3, init } = {}) {
   let r = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
-    try { r = await fetch(url); } catch { r = null; } // network error → retry
+    try { r = await fetch(url, init); } catch { r = null; } // network error → retry
     if (r) {
       const remain = parseInt(r.headers?.get?.("X-ESI-Error-Limit-Remain") ?? "", 10);
       const reset  = parseInt(r.headers?.get?.("X-ESI-Error-Limit-Reset")  ?? "", 10);
@@ -883,6 +990,9 @@ function formatISK(n) {
   if (n >= 1e3) return (n / 1e3).toFixed(1) + " K";
   return n.toFixed(0);
 }
+
+// Profit can be negative; formatISK assumes magnitudes.
+const fmtIskSigned = n => (n < 0 ? "−" : "") + formatISK(Math.abs(n));
 
 
 function fmt(n) {
@@ -977,6 +1087,81 @@ async function idbTxAll() {
     rq.onsuccess = () => { db.close(); res(rq.result ?? []); };
     rq.onerror   = () => { db.close(); res([]); };
   });
+}
+
+
+// ── Dashboard: character wallet balances ─────────────────────────────────────
+// The wallet scope already granted for the transaction ledger also covers the
+// balance endpoint, so this costs no re-login. Runs concurrently with the
+// orders/ledger refresh; token-refresh races are already deduped in
+// getAccessTokenFor. A character without the scope simply shows "—".
+async function fetchWalletBalances() {
+  const warnings = [];
+  const balances = {};
+  await Promise.all(ssoChars.map(async rec => {
+    if (!charHasScope(rec, WALLET_SCOPE)) return;
+    const token = await getAccessTokenFor(rec);
+    if (!token) return;   // stale session already warned about by the orders fetch
+    try {
+      const r = await esiFetchRetry(`${ESI}/characters/${rec.characterId}/wallet/?datasource=tranquility`,
+        { init: { headers: { Authorization: `Bearer ${token}` } } });
+      // Endpoint returns a bare number; parse inside the try so a malformed
+      // body degrades to the warning instead of rejecting the whole batch,
+      // and type-check it so a non-number body can't poison the totals.
+      if (r?.ok) {
+        const v = await r.json();
+        if (typeof v === "number" && Number.isFinite(v)) { balances[rec.characterId] = v; return; }
+      }
+    } catch {}
+    warnings.push(`${rec.characterName}: wallet balance unavailable`);
+  }));
+  return { balances, warnings };
+}
+
+
+// Corp balances: discover each character's corp (public endpoint), dedupe, then
+// read wallets via the first member whose token works. A 403 is the expected
+// "no Accountant role / scope not yet granted" case and stays silent; a corp
+// that failed for any other reason gets one warning. Corp names are public.
+async function fetchCorpBalances() {
+  const corpMembers = new Map();   // corpId → member recs (fetch-completion order — first workable member wins)
+  await Promise.all(ssoChars.map(async rec => {
+    // Parse inside the try so a malformed body drops this character's corp
+    // instead of rejecting the whole discovery batch.
+    let corpId = null;
+    try {
+      const r = await esiFetchRetry(`${ESI}/characters/${rec.characterId}/?datasource=tranquility`);
+      if (r?.ok) corpId = (await r.json())?.corporation_id;
+    } catch {}
+    // Player corps start at 98M; NPC corp wallets always 403 and burn error budget.
+    if (corpId >= 98000000) corpMembers.set(corpId, [...(corpMembers.get(corpId) ?? []), rec]);
+  }));
+
+  const corps = [], warnings = [];
+  await Promise.all([...corpMembers].map(async ([corpId, recs]) => {
+    let balance = null, non403 = false;
+    for (const rec of recs.filter(rc => charHasScope(rc, CORP_WALLET_SCOPE))) {
+      const token = await getAccessTokenFor(rec);
+      if (!token) continue;
+      try {
+        const r = await esiFetchRetry(`${ESI}/corporations/${corpId}/wallets/?datasource=tranquility`,
+          { init: { headers: { Authorization: `Bearer ${token}` } } });
+        if (r?.ok) { balance = (await r.json()).reduce((s, d) => s + (Number(d.balance) || 0), 0); break; }
+        if (r?.status !== 403) non403 = true;
+      } catch { non403 = true; }
+    }
+    if (balance === null) {
+      if (non403) warnings.push(`Corp ${corpId}: wallets unavailable`);
+      return;   // silent when it's only missing roles / an un-granted scope
+    }
+    let name = null;
+    try {
+      const nr = await esiFetchRetry(`${ESI}/corporations/${corpId}/?datasource=tranquility`);
+      if (nr?.ok) name = (await nr.json())?.name;
+    } catch {}
+    corps.push({ corpId, name: name ?? `Corp ${corpId}`, balance });
+  }));
+  return { corps: corps.sort((a, b) => a.corpId - b.corpId), warnings };
 }
 
 
@@ -1127,6 +1312,59 @@ function computeCostBasis(rows) {
   return basis;
 }
 
+// ── Activity stats engine ────────────────────────────────────────────────────
+// Realized per-window trading stats for the dashboard, from the same ledger
+// replay computeCostBasis performs: the avg cost backing each sell's profit is
+// the running weighted average at that moment, so the whole ledger replays
+// even though only fills inside a window are counted. Windows are EVE days
+// (UTC): today = since 00:00 UTC, week = trailing 7 UTC days. Buy-side basis
+// eligibility follows basisEligibleTx (the corp-buys setting); the separate
+// includeCorpSells option is the dashboard's corp toggle for what gets
+// *counted*. A counted corp sell with no basis in the replay contributes
+// revenue but unknown profit, so it flags the window partial.
+function computeActivityStats(rows, fees, nowMs, { includeCorpSells = true } = {}) {
+  const d = new Date(nowMs);
+  const todayStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const weekStart  = todayStart - 6 * 86400e3;
+  const today = { fills: 0, revenue: 0, profit: 0, profitPartial: false };
+  const week  = { fills: 0, revenue: 0, profit: 0, profitPartial: false };
+
+  const state = {};   // typeId → running { unitsOnHand, totalCost }, mirroring computeCostBasis
+  const sorted = [...rows].sort((a, b) =>
+    a.date < b.date ? -1 : a.date > b.date ? 1 : a.transactionId - b.transactionId);
+
+  for (const r of sorted) {
+    if (!(r.quantity > 0)) continue;
+    const inBasis = basisEligibleTx(r);
+
+    if (r.isBuy) {
+      if (!inBasis) continue;
+      const b = (state[r.typeId] ??= { unitsOnHand: 0, totalCost: 0 });
+      b.unitsOnHand += r.quantity;
+      b.totalCost   += r.quantity * r.unitPrice;
+      continue;
+    }
+
+    const b = inBasis ? (state[r.typeId] ??= { unitsOnHand: 0, totalCost: 0 }) : null;
+    const covered = b ? Math.min(r.quantity, b.unitsOnHand) : 0;
+    const avg = covered > 0 ? b.totalCost / b.unitsOnHand : null;
+
+    if (includeCorpSells || r.isPersonal !== false) {
+      const t = Date.parse(r.date);   // NaN (unparseable date) must not count into any window
+      for (const w of Number.isFinite(t) ? [today, week] : []) {
+        if (t < (w === today ? todayStart : weekStart)) continue;
+        w.fills   += 1;
+        w.revenue += r.quantity * r.unitPrice;
+        if (covered > 0) w.profit += covered * (r.unitPrice * (1 - fees.brokerFee - fees.salesTax) - avg);
+        if (covered < r.quantity) w.profitPartial = true;
+      }
+    }
+
+    if (covered > 0) { b.totalCost -= avg * covered; b.unitsOnHand -= covered; }
+    if (b && b.unitsOnHand === 0) b.totalCost = 0;   // avoid float dust, same as computeCostBasis
+  }
+  return { today, week };
+}
 
 // Every buy row still "in" the current weighted average for one type: every
 // buy since the position last fully cleared to zero. Once units-on-hand hits
@@ -1435,11 +1673,13 @@ function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef, soloAtStat
   const impact = delta != null ? Math.abs(delta) * order.volume_remain : 0;
 
   let marginPct = null;
+  let estProfit = null;
   if (order.is_buy_order) {
     if (ref != null && ref > 0) marginPct = (ref - order.price) / ref * 100;
   } else if (ref != null && basisState === "known" && avgCost != null && avgCost > 0) {
     const net = order.price * (1 - fees.brokerFee - fees.salesTax);
     marginPct = (net - avgCost) / avgCost * 100;
+    estProfit = (net - avgCost) * order.volume_remain;
   }
 
   // Current price vs Jita reference — direction-agnostic, needs no cost basis,
@@ -1459,7 +1699,7 @@ function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef, soloAtStat
   // soloAtStation is undefined/null when bestRef itself is null.
   const isSolo = bestRef != null && soloAtStation === 1;
 
-  return { target, delta, impact, marginPct, vsJitaPct, vsBestPct, isSolo, avgCost, basisState, markupPct };
+  return { target, delta, impact, marginPct, estProfit, vsJitaPct, vsBestPct, isSolo, avgCost, basisState, markupPct };
 }
 
 
@@ -1472,10 +1712,12 @@ let ordersSortKey = "impact", ordersSortAsc = false;
 // <select>'s .value always is, so comparisons below coerce both sides.
 let ordersFilterCharacterId = "";
 let ordersFilterStationId = "";
+let ordersFilterSoloOnly = "";
 
 function setOrdersFilter(kind, value) {
   if (kind === "character") ordersFilterCharacterId = value;
   else if (kind === "station") ordersFilterStationId = value;
+  else if (kind === "solo") ordersFilterSoloOnly = value;
   renderOrdersTable();
 }
 
@@ -1496,6 +1738,11 @@ async function refreshOrders() {
   try {
     // Orders and wallet history are independent; refresh-token races between
     // them are prevented by the in-flight dedup in getAccessTokenFor.
+    // Dashboard fetches start immediately but never gate the table: the
+    // table renders as soon as orders/books resolve, and the dashboard data
+    // + warnings merge in when they land (spec: dashboard failures never
+    // block or delay the orders refresh).
+    const dashFetch = Promise.all([fetchWalletBalances(), fetchCorpBalances()]);
     const [{ orders, warnings: ow }, { ledger, warnings: ww }] =
       await Promise.all([fetchAllCharacterOrders(), syncAllWalletTx()]);
 
@@ -1527,6 +1774,10 @@ async function refreshOrders() {
       warnings: [...ow, ...ww, ...region.warnings],
       loadedAt: Date.now(),
     };
+    renderOrdersTable();   // table goes live before the dashboard data lands
+    const [wallets, corpRes] = await dashFetch;
+    dashState = { balances: wallets.balances, corps: corpRes.corps };
+    ordersState.warnings.push(...wallets.warnings, ...corpRes.warnings);
   } catch (e) {
     ordersState.warnings = [`Refresh failed: ${e.message} — showing last data`];
   }
@@ -1701,7 +1952,7 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
   aoa[3] = [];
   aoa[ORDERS_XLSX_HEADER_ROW] = ["Character", "Item", "Side", "Station", "Qty Remain", "Qty Total",
     "Your Price", "Avg Cost", "Jita Ref", "vs Jita %", "Best Offer", "vs Best %", "Markup %",
-    "Target", "Delta", "Impact", "Margin %"];
+    "Target", "Delta", "Impact", "Margin %", "Est. Profit"];
 
   const formulas = [];
 
@@ -1724,7 +1975,7 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
       row.bestRef ?? "",
       "",
       hasOverride ? rules.perItem[o.type_id] : "",
-      "", "", "", "",
+      "", "", "", "", "",
     ];
 
     const G = xlsxAddr(r, 6), H = xlsxAddr(r, 7), I = xlsxAddr(r, 8), K = xlsxAddr(r, 10),
@@ -1741,6 +1992,9 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
 
     if (o.is_buy_order) {
       formulas.push({ r, c: 16, f: `IF(${I}="","",(${I}-${G})/${I}*100)` });
+      // Est. Profit doesn't apply to buy orders — nothing has been sold yet —
+      // so it stays blank rather than "n/a" (which is reserved for sells that
+      // lack a usable cost basis).
     } else if (row.basisState === "known") {
       // Guard the Jita Ref cell and a non-positive avg cost too, so the sheet
       // blanks exactly where deriveOrderRow's gate does. Without the I guard, a
@@ -1748,8 +2002,11 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
       // reports as n/a; without the H guard a zero cost basis yields #DIV/0!.
       formulas.push({ r, c: 16,
         f: `IF(OR(${G}="",${H}="",${H}<=0,${I}=""),"",((${G}*(1-${brokerFeeAddr}/100-${salesTaxAddr}/100))-${H})/${H}*100)` });
+      formulas.push({ r, c: 17,
+        f: `IF(OR(${G}="",${H}="",${H}<=0,${I}=""),"",((${G}*(1-${brokerFeeAddr}/100-${salesTaxAddr}/100))-${H})*${E})` });
     } else {
       aoa[r][16] = "n/a";
+      aoa[r][17] = "n/a";
     }
   });
 
@@ -1770,7 +2027,7 @@ function exportOrdersToExcel() {
   // cached .v is silently dropped by the writer. Excel recalculates every
   // formula on open regardless, so the placeholder is never actually seen.
   plan.formulas.forEach(({ r, c, f }) => { ws[XLSX.utils.encode_cell({ r, c })] = { t: "n", f, v: 0 }; });
-  ws["!cols"] = [8, 22, 6, 22, 10, 10, 11, 11, 11, 10, 11, 11, 10, 11, 11, 11, 10].map(wch => ({ wch }));
+  ws["!cols"] = [8, 22, 6, 22, 10, 10, 11, 11, 11, 10, 11, 11, 10, 11, 11, 11, 10, 12].map(wch => ({ wch }));
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "My Orders");
@@ -1779,6 +2036,7 @@ function exportOrdersToExcel() {
 
 
 function renderOrdersTable() {
+  renderDashboard();
   const tbody = document.getElementById("orders-tbody");
   const table = document.getElementById("orders-table");
   if (!tbody) return;
@@ -1833,12 +2091,18 @@ function renderOrdersTable() {
   if (charFilterEl) charFilterEl.innerHTML = ordersFilterSelectHtml("character", "Characters", charOptions, ordersFilterCharacterId);
   const stationFilterEl = document.getElementById("orders-filter-station");
   if (stationFilterEl) stationFilterEl.innerHTML = ordersFilterSelectHtml("station", "Stations", stationOptions, ordersFilterStationId);
+  const vsBestFilterEl = document.getElementById("orders-filter-vsbest");
+  if (vsBestFilterEl) vsBestFilterEl.innerHTML = ordersFilterSelectHtml("solo", "Orders", [["1", "Solo only"]], ordersFilterSoloOnly);
 
   const fees = currentFees();
   const filteredOrders = ordersState.orders.filter(o =>
     (!ordersFilterCharacterId || String(o.characterId) === ordersFilterCharacterId) &&
     (!ordersFilterStationId || String(o.location_id) === ordersFilterStationId));
-  const rows = filteredOrders.map(o => orderRowView(o, rules, fees));
+  // isSolo only exists once a row is derived (it needs the region book), so
+  // the solo filter is applied post-derivation rather than joining the other
+  // two filters above.
+  const rows = filteredOrders.map(o => orderRowView(o, rules, fees))
+    .filter(r => !ordersFilterSoloOnly || r.isSolo);
   const key = ordersSortKey;
   const val = r => key === "character" ? r.o.characterName
              : key === "name"    ? (ordersState.typeNames[r.o.type_id] ?? "")
@@ -1852,6 +2116,7 @@ function renderOrdersTable() {
              : key === "target"  ? (r.target ?? -Infinity)
              : key === "delta"   ? (r.delta ?? -Infinity)
              : key === "margin"  ? (r.marginPct ?? -Infinity)
+             : key === "estProfit" ? (r.estProfit ?? -Infinity)
              : r.impact;
   rows.sort((a, b) => {
     const x = val(a), y = val(b);
@@ -1860,7 +2125,7 @@ function renderOrdersTable() {
   });
 
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="14" style="text-align:center;padding:24px;color:var(--text-dim)">No orders match the selected filters.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="15" style="text-align:center;padding:24px;color:var(--text-dim)">No orders match the selected filters.</td></tr>`;
     table.style.display = "table";
     msg.style.display = "none";
     return;
@@ -1907,6 +2172,9 @@ function renderOrdersTable() {
       <td class="col-num ${r.delta == null ? "" : r.delta > 0 ? "profit-pos" : "profit-neg"}">${copyCell(r.delta)}</td>
       <td class="col-num ${r.delta == null ? "" : r.delta > 0 ? "profit-pos" : "profit-neg"}">${r.impact ? formatISK(r.impact) : "—"}</td>
       <td class="col-num ${marginCls}">${r.marginPct != null ? r.marginPct.toFixed(1) + "%" : "—"}</td>
+      <td class="col-num ${marginCls}">${r.estProfit != null
+        ? (r.estProfit < 0 ? "-" : "") + formatISK(Math.abs(r.estProfit))
+        : "—"}</td>
     </tr>`;
   }).join("");
 
@@ -1930,6 +2198,7 @@ function renderOrdersTable() {
 
   loadFees();
   loadCorpBuysSetting();
+  loadDashSettings();
   loadSsoChars();
   updateSsoUI();
   await handleSsoCallback();
@@ -1946,6 +2215,11 @@ function renderOrdersTable() {
     if (e.key !== "Enter" && e.key !== " ") return;
     if (e.target?.matches?.("th[onclick]")) { e.preventDefault(); e.target.click(); }
   });
+
+  // Activity stats need no network: the ledger is durable in IndexedDB, so the
+  // dashboard renders on load. Balances stay "—" until the first refresh.
+  const { merged } = mergeWalletTx(await idbTxAll(), []);
+  if (!ordersState.ledger.length) ordersState.ledger = merged;
 
   renderOrdersTable();
 })();
