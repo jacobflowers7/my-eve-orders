@@ -349,12 +349,13 @@
         <th class="col-num" onclick="setOrdersSort('avgCost')" title="Weighted-average price paid, pooled across all characters">Avg Cost</th>
         <th class="col-num" onclick="setOrdersSort('ref')" title="Jita 4-4 sell price — 5% volume-weighted percentile of the sell book, so single-unit troll orders don't set it. Falls back to the buy side only when nothing is for sale at all.">Jita Ref</th>
         <th class="col-num" onclick="setOrdersSort('vsJita')" title="Your current posted price vs the Jita reference, right now — (price − ref) / ref × 100. Positive = priced above Jita. No cost-basis needed, so this stays populated even when Margin % is n/a.">vs Jita %</th>
-        <th class="col-num" onclick="setOrdersSort('vsBest')" title="Your price vs the BEST live offer on your own side (lowest sell / highest buy) at this exact station right now. 0% means you're tied for the best price against real competitors; &quot;solo&quot; means nobody else is even listed there. Sells read positive (how far above the cheapest you are), buys negative (how far below the top bid). Blank only when the station's book can't be read at all.">vs Best %</th>
+        <th class="col-num" onclick="setOrdersSort('vsBest')" title="Your price vs the BEST live offer on your own side (lowest sell / highest buy) at this exact station right now. 0% means you're tied for the best price against real competitors; &quot;solo&quot; means nobody else is even listed there. Sells read positive (how far above the cheapest you are), buys negative (how far below the top bid). Blank only when the station's book can't be read at all.">vs Best %<br><span id="orders-filter-vsbest" onclick="event.stopPropagation()"></span></th>
         <th class="col-num" title="Per-item markup % — blank uses the global rule">Markup %</th>
         <th class="col-num" onclick="setOrdersSort('target')" title="Ref × (1±markup). Click a value to copy it">Target</th>
         <th class="col-num" onclick="setOrdersSort('delta')" title="Target − your price: the amount to adjust your price by to hit Target. Click to copy">Δ Price</th>
         <th class="col-num sort-desc" onclick="setOrdersSort('impact')" title="|Δ| × qty — how much ISK is at stake in repricing this order">Impact</th>
         <th class="col-num" onclick="setOrdersSort('margin')" title="Sells: net proceeds vs avg cost. Buys: % under Jita ref">Margin %</th>
+        <th class="col-num" onclick="setOrdersSort('estProfit')" title="Sells only: (net proceeds − avg cost) × qty remaining. Requires a known cost basis, so this is blank wherever Margin % is n/a.">Est. Profit</th>
       </tr>
     </thead>
     <tbody id="orders-tbody"></tbody>
@@ -1435,11 +1436,13 @@ function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef, soloAtStat
   const impact = delta != null ? Math.abs(delta) * order.volume_remain : 0;
 
   let marginPct = null;
+  let estProfit = null;
   if (order.is_buy_order) {
     if (ref != null && ref > 0) marginPct = (ref - order.price) / ref * 100;
   } else if (ref != null && basisState === "known" && avgCost != null && avgCost > 0) {
     const net = order.price * (1 - fees.brokerFee - fees.salesTax);
     marginPct = (net - avgCost) / avgCost * 100;
+    estProfit = (net - avgCost) * order.volume_remain;
   }
 
   // Current price vs Jita reference — direction-agnostic, needs no cost basis,
@@ -1459,7 +1462,7 @@ function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef, soloAtStat
   // soloAtStation is undefined/null when bestRef itself is null.
   const isSolo = bestRef != null && soloAtStation === 1;
 
-  return { target, delta, impact, marginPct, vsJitaPct, vsBestPct, isSolo, avgCost, basisState, markupPct };
+  return { target, delta, impact, marginPct, estProfit, vsJitaPct, vsBestPct, isSolo, avgCost, basisState, markupPct };
 }
 
 
@@ -1472,10 +1475,12 @@ let ordersSortKey = "impact", ordersSortAsc = false;
 // <select>'s .value always is, so comparisons below coerce both sides.
 let ordersFilterCharacterId = "";
 let ordersFilterStationId = "";
+let ordersFilterSoloOnly = "";
 
 function setOrdersFilter(kind, value) {
   if (kind === "character") ordersFilterCharacterId = value;
   else if (kind === "station") ordersFilterStationId = value;
+  else if (kind === "solo") ordersFilterSoloOnly = value;
   renderOrdersTable();
 }
 
@@ -1701,7 +1706,7 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
   aoa[3] = [];
   aoa[ORDERS_XLSX_HEADER_ROW] = ["Character", "Item", "Side", "Station", "Qty Remain", "Qty Total",
     "Your Price", "Avg Cost", "Jita Ref", "vs Jita %", "Best Offer", "vs Best %", "Markup %",
-    "Target", "Delta", "Impact", "Margin %"];
+    "Target", "Delta", "Impact", "Margin %", "Est. Profit"];
 
   const formulas = [];
 
@@ -1724,7 +1729,7 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
       row.bestRef ?? "",
       "",
       hasOverride ? rules.perItem[o.type_id] : "",
-      "", "", "", "",
+      "", "", "", "", "",
     ];
 
     const G = xlsxAddr(r, 6), H = xlsxAddr(r, 7), I = xlsxAddr(r, 8), K = xlsxAddr(r, 10),
@@ -1741,6 +1746,9 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
 
     if (o.is_buy_order) {
       formulas.push({ r, c: 16, f: `IF(${I}="","",(${I}-${G})/${I}*100)` });
+      // Est. Profit doesn't apply to buy orders — nothing has been sold yet —
+      // so it stays blank rather than "n/a" (which is reserved for sells that
+      // lack a usable cost basis).
     } else if (row.basisState === "known") {
       // Guard the Jita Ref cell and a non-positive avg cost too, so the sheet
       // blanks exactly where deriveOrderRow's gate does. Without the I guard, a
@@ -1748,8 +1756,11 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
       // reports as n/a; without the H guard a zero cost basis yields #DIV/0!.
       formulas.push({ r, c: 16,
         f: `IF(OR(${G}="",${H}="",${H}<=0,${I}=""),"",((${G}*(1-${brokerFeeAddr}/100-${salesTaxAddr}/100))-${H})/${H}*100)` });
+      formulas.push({ r, c: 17,
+        f: `IF(OR(${G}="",${H}="",${H}<=0,${I}=""),"",((${G}*(1-${brokerFeeAddr}/100-${salesTaxAddr}/100))-${H})*${E})` });
     } else {
       aoa[r][16] = "n/a";
+      aoa[r][17] = "n/a";
     }
   });
 
@@ -1770,7 +1781,7 @@ function exportOrdersToExcel() {
   // cached .v is silently dropped by the writer. Excel recalculates every
   // formula on open regardless, so the placeholder is never actually seen.
   plan.formulas.forEach(({ r, c, f }) => { ws[XLSX.utils.encode_cell({ r, c })] = { t: "n", f, v: 0 }; });
-  ws["!cols"] = [8, 22, 6, 22, 10, 10, 11, 11, 11, 10, 11, 11, 10, 11, 11, 11, 10].map(wch => ({ wch }));
+  ws["!cols"] = [8, 22, 6, 22, 10, 10, 11, 11, 11, 10, 11, 11, 10, 11, 11, 11, 10, 12].map(wch => ({ wch }));
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "My Orders");
@@ -1833,12 +1844,18 @@ function renderOrdersTable() {
   if (charFilterEl) charFilterEl.innerHTML = ordersFilterSelectHtml("character", "Characters", charOptions, ordersFilterCharacterId);
   const stationFilterEl = document.getElementById("orders-filter-station");
   if (stationFilterEl) stationFilterEl.innerHTML = ordersFilterSelectHtml("station", "Stations", stationOptions, ordersFilterStationId);
+  const vsBestFilterEl = document.getElementById("orders-filter-vsbest");
+  if (vsBestFilterEl) vsBestFilterEl.innerHTML = ordersFilterSelectHtml("solo", "Orders", [["1", "Solo only"]], ordersFilterSoloOnly);
 
   const fees = currentFees();
   const filteredOrders = ordersState.orders.filter(o =>
     (!ordersFilterCharacterId || String(o.characterId) === ordersFilterCharacterId) &&
     (!ordersFilterStationId || String(o.location_id) === ordersFilterStationId));
-  const rows = filteredOrders.map(o => orderRowView(o, rules, fees));
+  // isSolo only exists once a row is derived (it needs the region book), so
+  // the solo filter is applied post-derivation rather than joining the other
+  // two filters above.
+  const rows = filteredOrders.map(o => orderRowView(o, rules, fees))
+    .filter(r => !ordersFilterSoloOnly || r.isSolo);
   const key = ordersSortKey;
   const val = r => key === "character" ? r.o.characterName
              : key === "name"    ? (ordersState.typeNames[r.o.type_id] ?? "")
@@ -1852,6 +1869,7 @@ function renderOrdersTable() {
              : key === "target"  ? (r.target ?? -Infinity)
              : key === "delta"   ? (r.delta ?? -Infinity)
              : key === "margin"  ? (r.marginPct ?? -Infinity)
+             : key === "estProfit" ? (r.estProfit ?? -Infinity)
              : r.impact;
   rows.sort((a, b) => {
     const x = val(a), y = val(b);
@@ -1860,7 +1878,7 @@ function renderOrdersTable() {
   });
 
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="14" style="text-align:center;padding:24px;color:var(--text-dim)">No orders match the selected filters.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="15" style="text-align:center;padding:24px;color:var(--text-dim)">No orders match the selected filters.</td></tr>`;
     table.style.display = "table";
     msg.style.display = "none";
     return;
@@ -1907,6 +1925,9 @@ function renderOrdersTable() {
       <td class="col-num ${r.delta == null ? "" : r.delta > 0 ? "profit-pos" : "profit-neg"}">${copyCell(r.delta)}</td>
       <td class="col-num ${r.delta == null ? "" : r.delta > 0 ? "profit-pos" : "profit-neg"}">${r.impact ? formatISK(r.impact) : "—"}</td>
       <td class="col-num ${marginCls}">${r.marginPct != null ? r.marginPct.toFixed(1) + "%" : "—"}</td>
+      <td class="col-num ${marginCls}">${r.estProfit != null
+        ? (r.estProfit < 0 ? "-" : "") + formatISK(Math.abs(r.estProfit))
+        : "—"}</td>
     </tr>`;
   }).join("");
 
