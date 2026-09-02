@@ -996,10 +996,14 @@ async function fetchWalletBalances() {
     if (!charHasScope(rec, WALLET_SCOPE)) return;
     const token = await getAccessTokenFor(rec);
     if (!token) return;   // stale session already warned about by the orders fetch
-    const r = await esiFetchRetry(`${ESI}/characters/${rec.characterId}/wallet/?datasource=tranquility`,
-      { init: { headers: { Authorization: `Bearer ${token}` } } });
-    if (r?.ok) balances[rec.characterId] = await r.json();   // endpoint returns a bare number
-    else warnings.push(`${rec.characterName}: wallet balance unavailable`);
+    try {
+      const r = await esiFetchRetry(`${ESI}/characters/${rec.characterId}/wallet/?datasource=tranquility`,
+        { init: { headers: { Authorization: `Bearer ${token}` } } });
+      // Endpoint returns a bare number; parse inside the try so a malformed
+      // body degrades to the warning instead of rejecting the whole batch.
+      if (r?.ok) { balances[rec.characterId] = await r.json(); return; }
+    } catch {}
+    warnings.push(`${rec.characterName}: wallet balance unavailable`);
   }));
   return { balances, warnings };
 }
