@@ -56,6 +56,12 @@ const { run, check, summary } = require("./harness");
       sellEstProfitFormula: byCell(5, 17),
       buyEstProfitFormula: byCell(6, 17),
       noBasisEstProfitFormula: byCell(7, 17),
+      sellProjMarginFormula: byCell(5, 18),
+      buyProjMarginFormula: byCell(6, 18),
+      noBasisProjMarginFormula: byCell(7, 18),
+      sellProjProfitFormula: byCell(5, 19),
+      buyProjProfitFormula: byCell(6, 19),
+      noBasisProjProfitFormula: byCell(7, 19),
       vsJitaFormula: byCell(5, 9),
       vsBestFormula: byCell(5, 11),
       deltaFormula: byCell(5, 14),
@@ -63,10 +69,10 @@ const { run, check, summary } = require("./harness");
     };
   `);
 
-  check("header row matches the 18-column layout", JSON.stringify(r2.header) ===
+  check("header row matches the 20-column layout", JSON.stringify(r2.header) ===
     JSON.stringify(["Character","Item","Side","Station","Qty Remain","Qty Total","Your Price",
       "Avg Cost","Jita Ref","vs Jita %","Best Offer","vs Best %","Markup %",
-      "Target","Delta","Impact","Margin %","Est. Profit"]));
+      "Target","Delta","Impact","Margin %","Est. Profit","Proj. Margin %","Proj. Profit"]));
   check("settings row holds global markup and fees as percent values",
         JSON.stringify(r2.settingsRow) === '["Global Markup %",20,"Broker Fee %",3,"Sales Tax %",3]');
 
@@ -94,6 +100,19 @@ const { run, check, summary } = require("./harness");
         r2.sellEstProfitFormula.f === 'IF(OR(G6="",H6="",H6<=0,I6=""),"",((G6*(1-$D$3/100-$F$3/100))-H6)*E6)');
   check("buy orders get no est. profit — nothing has been sold", r2.buyEstProfitFormula === undefined && r2.buyDataRow[17] === "");
   check("no-basis sell gets a literal n/a for est. profit too", r2.noBasisRow[17] === "n/a" && r2.noBasisEstProfitFormula === undefined);
+  // Proj. Margin/Profit use Target (N) in place of Your Price (G) — same fee
+  // cells, same H guards, no separate ref guard since N is already blank
+  // whenever the ref is.
+  check("sell proj. margin (known basis) uses Target instead of Your Price",
+        r2.sellProjMarginFormula.f === 'IF(OR(N6="",H6="",H6<=0),"",((N6*(1-$D$3/100-$F$3/100))-H6)/H6*100)');
+  check("sell proj. profit (known basis) uses Target instead of Your Price",
+        r2.sellProjProfitFormula.f === 'IF(OR(N6="",H6="",H6<=0),"",((N6*(1-$D$3/100-$F$3/100))-H6)*E6)');
+  check("buy orders get no proj. margin/profit — nothing has been sold",
+        r2.buyProjMarginFormula === undefined && r2.buyProjProfitFormula === undefined &&
+        r2.buyDataRow[18] === "" && r2.buyDataRow[19] === "");
+  check("no-basis sell gets a literal n/a for proj. margin/profit too",
+        r2.noBasisRow[18] === "n/a" && r2.noBasisRow[19] === "n/a" &&
+        r2.noBasisProjMarginFormula === undefined && r2.noBasisProjProfitFormula === undefined);
   check("vs Jita % formula is direction-agnostic (price vs ref)", r2.vsJitaFormula.f === 'IF(I6="","",(G6-I6)/I6*100)');
   check("vs Best % formula references the best-offer column", r2.vsBestFormula.f === 'IF(K6="","",(G6-K6)/K6*100)');
   check("delta formula is target minus price", r2.deltaFormula.f === 'IF(N6="","",N6-G6)');

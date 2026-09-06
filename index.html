@@ -361,6 +361,8 @@
         <th class="col-num sort-desc" onclick="setOrdersSort('impact')" title="|Δ| × qty — how much ISK is at stake in repricing this order">Impact</th>
         <th class="col-num" onclick="setOrdersSort('margin')" title="Sells: net proceeds vs avg cost. Buys: % under Jita ref">Margin %</th>
         <th class="col-num" onclick="setOrdersSort('estProfit')" title="Sells only: (net proceeds − avg cost) × qty remaining. Requires a known cost basis, so this is blank wherever Margin % is n/a.">Est. Profit</th>
+        <th class="col-num" onclick="setOrdersSort('projMargin')" title="Sells only: what Margin % would be if this order sat at Target instead of its current price — i.e. the effect of the Markup % input. Same cost-basis requirement as Margin %.">Proj. Margin %</th>
+        <th class="col-num" onclick="setOrdersSort('projProfit')" title="Sells only: what Est. Profit would be if this order sat at Target instead of its current price — i.e. the effect of the Markup % input. Same cost-basis requirement as Est. Profit.">Proj. Profit</th>
       </tr>
     </thead>
     <tbody id="orders-tbody"></tbody>
@@ -1674,12 +1676,22 @@ function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef, soloAtStat
 
   let marginPct = null;
   let estProfit = null;
+  // Projected: the same two figures, but as if the order were sitting at
+  // Target (ref adjusted by the Markup % input) instead of its actual listed
+  // price. Sells only — a buy's projected margin at Target reduces to exactly
+  // the markup % by construction, so it wouldn't tell you anything new.
+  let projMarginPct = null;
+  let projEstProfit = null;
   if (order.is_buy_order) {
     if (ref != null && ref > 0) marginPct = (ref - order.price) / ref * 100;
   } else if (ref != null && basisState === "known" && avgCost != null && avgCost > 0) {
     const net = order.price * (1 - fees.brokerFee - fees.salesTax);
     marginPct = (net - avgCost) / avgCost * 100;
     estProfit = (net - avgCost) * order.volume_remain;
+
+    const netAtTarget = target * (1 - fees.brokerFee - fees.salesTax);
+    projMarginPct = (netAtTarget - avgCost) / avgCost * 100;
+    projEstProfit = (netAtTarget - avgCost) * order.volume_remain;
   }
 
   // Current price vs Jita reference — direction-agnostic, needs no cost basis,
@@ -1699,7 +1711,8 @@ function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef, soloAtStat
   // soloAtStation is undefined/null when bestRef itself is null.
   const isSolo = bestRef != null && soloAtStation === 1;
 
-  return { target, delta, impact, marginPct, estProfit, vsJitaPct, vsBestPct, isSolo, avgCost, basisState, markupPct };
+  return { target, delta, impact, marginPct, estProfit, projMarginPct, projEstProfit,
+            vsJitaPct, vsBestPct, isSolo, avgCost, basisState, markupPct };
 }
 
 
@@ -1952,7 +1965,7 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
   aoa[3] = [];
   aoa[ORDERS_XLSX_HEADER_ROW] = ["Character", "Item", "Side", "Station", "Qty Remain", "Qty Total",
     "Your Price", "Avg Cost", "Jita Ref", "vs Jita %", "Best Offer", "vs Best %", "Markup %",
-    "Target", "Delta", "Impact", "Margin %", "Est. Profit"];
+    "Target", "Delta", "Impact", "Margin %", "Est. Profit", "Proj. Margin %", "Proj. Profit"];
 
   const formulas = [];
 
@@ -1975,7 +1988,7 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
       row.bestRef ?? "",
       "",
       hasOverride ? rules.perItem[o.type_id] : "",
-      "", "", "", "", "",
+      "", "", "", "", "", "", "",
     ];
 
     const G = xlsxAddr(r, 6), H = xlsxAddr(r, 7), I = xlsxAddr(r, 8), K = xlsxAddr(r, 10),
@@ -1992,9 +2005,9 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
 
     if (o.is_buy_order) {
       formulas.push({ r, c: 16, f: `IF(${I}="","",(${I}-${G})/${I}*100)` });
-      // Est. Profit doesn't apply to buy orders — nothing has been sold yet —
-      // so it stays blank rather than "n/a" (which is reserved for sells that
-      // lack a usable cost basis).
+      // Est. Profit and Proj. Margin/Profit don't apply to buy orders —
+      // nothing has been sold yet — so they stay blank rather than "n/a"
+      // (which is reserved for sells that lack a usable cost basis).
     } else if (row.basisState === "known") {
       // Guard the Jita Ref cell and a non-positive avg cost too, so the sheet
       // blanks exactly where deriveOrderRow's gate does. Without the I guard, a
@@ -2004,9 +2017,18 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
         f: `IF(OR(${G}="",${H}="",${H}<=0,${I}=""),"",((${G}*(1-${brokerFeeAddr}/100-${salesTaxAddr}/100))-${H})/${H}*100)` });
       formulas.push({ r, c: 17,
         f: `IF(OR(${G}="",${H}="",${H}<=0,${I}=""),"",((${G}*(1-${brokerFeeAddr}/100-${salesTaxAddr}/100))-${H})*${E})` });
+      // Proj. Margin/Profit are the same two formulas with Target (N) standing
+      // in for Your Price (G) — N is itself blank whenever I is, so no
+      // separate I guard is needed here.
+      formulas.push({ r, c: 18,
+        f: `IF(OR(${N}="",${H}="",${H}<=0),"",((${N}*(1-${brokerFeeAddr}/100-${salesTaxAddr}/100))-${H})/${H}*100)` });
+      formulas.push({ r, c: 19,
+        f: `IF(OR(${N}="",${H}="",${H}<=0),"",((${N}*(1-${brokerFeeAddr}/100-${salesTaxAddr}/100))-${H})*${E})` });
     } else {
       aoa[r][16] = "n/a";
       aoa[r][17] = "n/a";
+      aoa[r][18] = "n/a";
+      aoa[r][19] = "n/a";
     }
   });
 
@@ -2027,7 +2049,7 @@ function exportOrdersToExcel() {
   // cached .v is silently dropped by the writer. Excel recalculates every
   // formula on open regardless, so the placeholder is never actually seen.
   plan.formulas.forEach(({ r, c, f }) => { ws[XLSX.utils.encode_cell({ r, c })] = { t: "n", f, v: 0 }; });
-  ws["!cols"] = [8, 22, 6, 22, 10, 10, 11, 11, 11, 10, 11, 11, 10, 11, 11, 11, 10, 12].map(wch => ({ wch }));
+  ws["!cols"] = [8, 22, 6, 22, 10, 10, 11, 11, 11, 10, 11, 11, 10, 11, 11, 11, 10, 12, 13, 12].map(wch => ({ wch }));
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "My Orders");
@@ -2117,6 +2139,8 @@ function renderOrdersTable() {
              : key === "delta"   ? (r.delta ?? -Infinity)
              : key === "margin"  ? (r.marginPct ?? -Infinity)
              : key === "estProfit" ? (r.estProfit ?? -Infinity)
+             : key === "projMargin" ? (r.projMarginPct ?? -Infinity)
+             : key === "projProfit" ? (r.projEstProfit ?? -Infinity)
              : r.impact;
   rows.sort((a, b) => {
     const x = val(a), y = val(b);
@@ -2125,7 +2149,7 @@ function renderOrdersTable() {
   });
 
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="15" style="text-align:center;padding:24px;color:var(--text-dim)">No orders match the selected filters.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="17" style="text-align:center;padding:24px;color:var(--text-dim)">No orders match the selected filters.</td></tr>`;
     table.style.display = "table";
     msg.style.display = "none";
     return;
@@ -2138,6 +2162,7 @@ function renderOrdersTable() {
     const badge = r.basisState === "partial"
       ? ` <span title="Ledger starts mid-history for this item — average may be wrong, margin suppressed" style="color:#e0a040;font-size:10px">partial</span>` : "";
     const marginCls = r.marginPct == null ? "" : r.marginPct > 0 ? "profit-pos" : "profit-neg";
+    const projMarginCls = r.projMarginPct == null ? "" : r.projMarginPct > 0 ? "profit-pos" : "profit-neg";
     const vsJitaCls = r.vsJitaPct == null ? "" : r.vsJitaPct > 0 ? "profit-pos" : "profit-neg";
     // Zero is the good state here, not "neutral": it means nobody has undercut
     // or outbid you. Tolerance matches the one-decimal display, so a cell
@@ -2174,6 +2199,10 @@ function renderOrdersTable() {
       <td class="col-num ${marginCls}">${r.marginPct != null ? r.marginPct.toFixed(1) + "%" : "—"}</td>
       <td class="col-num ${marginCls}">${r.estProfit != null
         ? (r.estProfit < 0 ? "-" : "") + formatISK(Math.abs(r.estProfit))
+        : "—"}</td>
+      <td class="col-num ${projMarginCls}">${r.projMarginPct != null ? r.projMarginPct.toFixed(1) + "%" : "—"}</td>
+      <td class="col-num ${projMarginCls}">${r.projEstProfit != null
+        ? (r.projEstProfit < 0 ? "-" : "") + formatISK(Math.abs(r.projEstProfit))
         : "—"}</td>
     </tr>`;
   }).join("");
