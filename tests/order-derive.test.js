@@ -48,20 +48,30 @@ const { run, check, summary } = require("./harness");
   check("zero fees give gross margin", Math.abs(r.zeroFees.marginPct - 30) < 1e-9);
   // estProfit = (net - avgCost) * qty = (122.2 - 100) * 10 = 222
   check("sell est. profit = (net - avgCost) * qty remain", Math.abs(r.sellRow.estProfit - 222) < 1e-9);
+  // projected: at Target (120) instead of price (130) — net = 120*0.94 = 112.8;
+  // projMargin = (112.8-100)/100*100 = 12.8; projProfit = (112.8-100)*10 = 128
+  check("sell proj. margin uses Target instead of actual price", Math.abs(r.sellRow.projMarginPct - 12.8) < 1e-9);
+  check("sell proj. profit uses Target instead of actual price", Math.abs(r.sellRow.projEstProfit - 128) < 1e-9);
+  // zero fees: net = target = avgCost*(1+markup) exactly, so proj. margin reduces to markup %
+  check("zero fees: proj. margin equals markup % exactly", Math.abs(r.zeroFees.projMarginPct - 20) < 1e-9);
 
   // buy: target = 100*0.8 = 80; delta = 80-90 = -10; margin = (100-90)/100*100 = 10 (under ref = good)
   check("buy target from ref*(1-markup)", r.buyRow.target === 80);
   check("buy margin = % under reference", r.buyRow.marginPct === 10);
   check("buy orders get no est. profit — nothing has been sold", r.buyRow.estProfit === null);
+  check("buy orders get no proj. margin/profit either", r.buyRow.projMarginPct === null && r.buyRow.projEstProfit === null);
 
   check("partial basis suppresses margin", r.partial.marginPct === null && r.partial.basisState === "partial");
   check("partial basis suppresses est. profit too", r.partial.estProfit === null);
+  check("partial basis suppresses proj. margin/profit too", r.partial.projMarginPct === null && r.partial.projEstProfit === null);
   check("unknown basis: n/a margin, avgCost null", r.unknown.marginPct === null &&
         r.unknown.avgCost === null && r.unknown.basisState === "unknown");
   check("unknown basis: est. profit also null", r.unknown.estProfit === null);
+  check("unknown basis: proj. margin/profit also null", r.unknown.projMarginPct === null && r.unknown.projEstProfit === null);
   check("no ref: target/delta/margin all null, still listed", r.noRef.target === null &&
         r.noRef.delta === null && r.noRef.marginPct === null && r.noRef.impact === 0);
   check("no ref: est. profit also null", r.noRef.estProfit === null);
+  check("no ref: proj. margin/profit also null", r.noRef.projMarginPct === null && r.noRef.projEstProfit === null);
 
   // vsJitaPct: current price vs Jita ref, direction-agnostic, no cost-basis dependency —
   // price=130, ref=100 → (130-100)/100*100 = 30 (priced 30% above Jita)
