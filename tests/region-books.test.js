@@ -116,5 +116,91 @@ const { run, check, summary } = require("./harness");
   check("a station with only our own buy counts as 1 (solo)", r3.loneBuyer === 1);
   check("station with a book but nothing at that location → 0, not null", r3.emptyStation === 0);
   check("unknown region/type pair → null, no crash", r3.unknown === null);
+
+  // Pagination. /markets/{region}/orders/ caps a page at 1000 orders and does
+  // NOT sort by price, so reading only page 1 keeps an arbitrary subset: here
+  // the cheapest competitor sits on page 2 while our own order is on page 1.
+  // Truncating would make stationBestRef return our own price and the
+  // "vs Best %" column read 0.0% (winning) while we are actually undercut.
+  const pagedCalls = [];
+  const pagedStub = async (url) => {
+    const u = String(url);
+    pagedCalls.push(u);
+    const typeId = Number((u.match(/type_id=(\d+)/) || [])[1]);
+    const page = Number((u.match(/[?&]page=(\d+)/) || [])[1]);
+    if (typeId !== 34) return { ok: false, status: 404, headers: { get: () => "1" }, json: async () => null };
+    const hdr = { get: h => (h === "X-Pages" ? "2" : null) };
+    if (page === 1) return { ok: true, headers: hdr, json: async () => [
+      { order_id: 1, location_id: 60003760, is_buy_order: false, price: 500, volume_remain: 10 },   // ours
+      { order_id: 2, location_id: 60003760, is_buy_order: true,  price: 470, volume_remain: 5 },
+    ] };
+    if (page === 2) return { ok: true, headers: hdr, json: async () => [
+      { order_id: 3, location_id: 60003760, is_buy_order: false, price: 480, volume_remain: 7 },    // undercuts us
+      { order_id: 4, location_id: 60003760, is_buy_order: true,  price: 490, volume_remain: 3 },    // outbids us
+    ] };
+    return { ok: false, status: 404, headers: hdr, json: async () => null };
+  };
+
+  const r4 = await run(`
+    const books = await fetchRegionBooksForPairs([{ regionId: 10000002, typeId: 34 }]);
+    const b34 = books[10000002][34];
+    const ours = { order_id: 1, region_id: 10000002, type_id: 34, location_id: 60003760, is_buy_order: false };
+    return {
+      sell: b34.sell.map(o => o.price),
+      buy:  b34.buy.map(o => o.price),
+      best: stationBestRef(books, ours),
+    };
+  `, { fetch: pagedStub });
+
+  check("page 2 orders are in the book, not dropped",
+        JSON.stringify(r4.sell) === "[480,500]" && JSON.stringify(r4.buy) === "[490,470]");
+  check("sorting happens after all pages, so a later page can take the head", r4.sell[0] === 480);
+  check("undercut by a page-2 order is visible to stationBestRef (not a false 0%)", r4.best === 480);
+  check("requested page 1 and page 2, and stopped at X-Pages",
+        pagedCalls.filter(u => /[?&]page=1(&|$)/.test(u)).length === 1
+        && pagedCalls.filter(u => /[?&]page=2(&|$)/.test(u)).length === 1
+        && pagedCalls.every(u => !/[?&]page=3(&|$)/.test(u)));
+
+  // A failing later page degrades to the pages we did get, per the existing
+  // per-type try/catch contract: one bad response can't reject the batch.
+  const r5 = await run(`
+    ESI_RETRY_MIN_DELAY_MS = 0;   // the 500 below is retried; don't sleep through it
+    const books = await fetchRegionBooksForPairs([
+      { regionId: 10000002, typeId: 34 },
+      { regionId: 10000002, typeId: 99 },
+    ]);
+    return {
+      sell: books[10000002][34].sell.map(o => o.price),
+      other: books[10000002][99],
+    };
+  `, { fetch: async (url) => {
+    const u = String(url);
+    const typeId = Number((u.match(/type_id=(\d+)/) || [])[1]);
+    const page = Number((u.match(/[?&]page=(\d+)/) || [])[1]);
+    const hdr = { get: h => (h === "X-Pages" ? "3" : null) };
+    if (typeId === 34 && page === 1) return { ok: true, headers: hdr, json: async () => [
+      { order_id: 1, location_id: 60003760, is_buy_order: false, price: 500, volume_remain: 10 },
+    ] };
+    if (typeId === 34 && page === 2) return { ok: false, status: 500, headers: hdr, json: async () => null };
+    if (typeId === 34 && page === 3) return { ok: true, headers: hdr, json: async () => [
+      { order_id: 5, location_id: 60003760, is_buy_order: false, price: 460, volume_remain: 2 },
+    ] };
+    return { ok: false, status: 404, headers: hdr, json: async () => null };
+  } });
+
+  check("a failed middle page keeps the pages that did load and keeps going",
+        JSON.stringify(r5.sell) === "[460,500]");
+  check("a fully failed type still yields empty books, not a rejected batch",
+        JSON.stringify(r5.other) === '{"sell":[],"buy":[]}');
+
+  // Same truncation hazard on the Jita-only fetcher, which shares the endpoint.
+  const r6 = await run(`
+    const books = await fetchJitaBooksForTypes([34]);
+    return { sell: books[34].sell.map(o => o.price), buy: books[34].buy.map(o => o.price) };
+  `, { fetch: pagedStub });
+
+  check("Jita books follow X-Pages too", JSON.stringify(r6.sell) === "[480,500]");
+  check("Jita buy side keeps page-2 bids, best-first", JSON.stringify(r6.buy) === "[490,470]");
+
   summary("region-books");
 })();
