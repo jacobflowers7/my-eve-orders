@@ -1,14 +1,14 @@
 # vs Best % — Real Competition Only — Design
 
 **Date:** 2026-09-07
-**Status:** Approved for planning
+**Status:** Implemented
 
 ## Purpose
 
 The "vs Best %" column exists to answer one question: **has another player taken
 the best price away from me at this station, and by how much am I behind?**
 
-It currently answers that question wrongly in three distinct ways, all of which
+It answered that question wrongly in three distinct ways, all of which
 resolve to a falsely reassuring green cell. This design makes the column compare
 against *real competitors only* and report five explicit, non-overlapping states.
 
@@ -20,7 +20,7 @@ against *real competitors only* and report five explicit, non-overlapping states
    percent — so the band greened out precisely the case the column exists to
    catch. An order listed at 100,000,000 against a rival at 99,999,999.99
    computed to `0.00000001%` and rendered as a winning `0.0%`.
-   *(Fixed ahead of this spec; see "Already landed" below.)*
+   *(Fixed ahead of this spec; see "Implementation notes" below.)*
 
 2. **Your own orders counted as competition.** `stationBestRef` and
    `stationOfferCount` filter the station book by `locationId` only — never by
@@ -160,11 +160,21 @@ Extend `tests/vs-best-undercut.test.js` and `tests/region-books.test.js`:
 invalidates** — the buy order that "holds the top bid → 0.0% green" becomes a
 winning `+12.5%`. They will be updated to the new expectation, not worked around.
 
-## Already landed
+## Implementation notes
 
-The tolerance-band fix (defect 1) is committed ahead of this spec, along with
-`tests/vs-best-undercut.test.js`. This design builds on it: the direction test
-(`beaten`) introduced there survives intact and becomes one of the five states.
+Defect 1 (the tolerance band) shipped ahead of this spec in `be3dc6a`. Defects 2
+and 3 followed here. The direction test introduced by the first fix survives
+intact and became the `beaten` state.
+
+`stationBestRef` and `stationOfferCount` were replaced by `stationRivals` plus
+`stationBookReadable` — the two old lookups each traversed the station book
+independently and neither could tell whose order it was reading.
+
+One case surfaced during implementation that the design above did not name:
+`renderOrdersTable` applies station/character filters *before* deriving rows, so
+the id set must be built from the full order list rather than the filtered one.
+Otherwise filtering to one station would turn our own hidden orders into rivals
+of the rows still on screen.
 
 ## Out of scope
 

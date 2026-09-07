@@ -15,6 +15,7 @@
       --teal:     #4ab8c8;
       --red:      #e05050;
       --green:    #50c878;
+      --amber:    #e0a040;
       --text:     #c8cfe0;
       --text-dim: #667080;
       --font:     'Segoe UI', system-ui, sans-serif;
@@ -180,6 +181,8 @@
     .col-num  { text-align: right; font-variant-numeric: tabular-nums; font-family: monospace; }
     .profit-pos { color: var(--green); }
     .profit-neg { color: var(--red); }
+    /* Neither a win nor a loss: a rival sitting on your exact price. */
+    .profit-tie { color: var(--amber); }
     .margin-hi  { color: var(--gold2); font-weight: 600; }
     .margin-mid { color: var(--text); }
 
@@ -354,7 +357,7 @@
         <th class="col-num" onclick="setOrdersSort('avgCost')" title="Weighted-average price paid, pooled across all characters">Avg Cost</th>
         <th class="col-num" onclick="setOrdersSort('ref')" title="Jita 4-4 sell price — 5% volume-weighted percentile of the sell book, so single-unit troll orders don't set it. Falls back to the buy side only when nothing is for sale at all.">Jita Ref</th>
         <th class="col-num" onclick="setOrdersSort('vsJita')" title="Your current posted price vs the Jita reference, right now — (price − ref) / ref × 100. Positive = priced above Jita. No cost-basis needed, so this stays populated even when Margin % is n/a.">vs Jita %</th>
-        <th class="col-num" onclick="setOrdersSort('vsBest')" title="Your price vs the BEST live offer on your own side (lowest sell / highest buy) at this exact station right now. Green 0.0% means nobody has beaten you — you hold the best price or are tied for it; &quot;solo&quot; means nobody else is even listed there. ANY red value means a rival is ahead of you, however small: sells read positive (how far above the cheapest you are), buys negative (how far below the top bid), and an undercut too fine to show at one decimal reads &quot;&lt;0.1%&quot; rather than rounding to zero. Blank only when the station's book can't be read at all.">vs Best %<br><span id="orders-filter-vsbest" onclick="event.stopPropagation()"></span></th>
+        <th class="col-num" onclick="setOrdersSort('vsBest')" title="Your price vs the best live offer from ANOTHER PLAYER on your own side (lowest sell / highest buy) at this exact station. Your own orders are never counted as competition, so holding two orders here still reads &quot;solo&quot;. GREEN means you are ahead — the number is your headroom (a sell reads negative: how far below the nearest rival you sit). AMBER 0.0% means a rival is on your exact price. RED means a rival is ahead of you, however small; a gap too fine for one decimal reads &quot;&lt;0.1%&quot; rather than rounding to zero. &quot;solo&quot; means no rival is listed here at all, and a dash means this station&#39;s book cannot be read. NOTE: an order from a character you have not logged into this tool cannot be recognised as yours, so it will count as a rival — and can show as a tie against yourself.">vs Best %<br><span id="orders-filter-vsbest" onclick="event.stopPropagation()"></span></th>
         <th class="col-num" title="Per-item markup % — blank uses the global rule">Markup %</th>
         <th class="col-num" onclick="setOrdersSort('target')" title="Ref × (1±markup). Click a value to copy it">Target</th>
         <th class="col-num" onclick="setOrdersSort('delta')" title="Target − your price: the amount to adjust your price by to hit Target. Click to copy">Δ Price</th>
@@ -1544,7 +1547,7 @@ async function fetchStructureBooksInto(regionBooks, orders) {
         if (side.some(x => x.orderId === o.order_id)) continue;
         side.push({ price: o.price, remain: o.volume_remain, locationId: structureId, orderId: o.order_id });
       }
-      // Re-establish best-first ordering; stationBestRef reads the head.
+      // Re-establish best-first ordering; stationRivals reads the head.
       for (const typeId of typeIds) {
         const out = regionBooks[regionId]?.[typeId];
         if (!out) continue;
@@ -1566,35 +1569,45 @@ async function fetchStructureBooksInto(regionBooks, orders) {
 }
 
 
-// The live reference for "the best offer at this exact station right now" —
-// lowest sell for a sell order, highest buy for a buy order. The order's OWN
-// posting is deliberately INCLUDED: the question being answered is "has anyone
-// beaten my price here?", so when nobody has, the best offer is ours and the
-// comparison lands on exactly 0%. Excluding it would instead measure the gap to
-// the runner-up, which reads as though we were losing while actually winning.
-function stationBestRef(regionBooks, order) {
+// Every live order on this order's own side at this order's own station that
+// belongs to SOMEBODY ELSE. Our own postings are not competition: holding two
+// orders on one item at one station used to read as "beaten" (by ourselves) on
+// the dearer one, and defeated the solo check on both.
+//
+// Books are sorted best-first and filtering preserves that, so rivals[0] is the
+// best competing offer and rivals.length is the competitor count — one list
+// answers both questions. No volume percentile: a one-unit troll order still
+// beats you in the client's sort, which is what a trader is reacting to.
+//
+// Returns null (not []) when the region/type book is missing entirely, so the
+// caller can tell "no book" from "book read, nobody else here".
+function stationRivals(regionBooks, order, myOrderIds) {
   const book = regionBooks[order.region_id]?.[order.type_id];
   if (!book) return null;
   const side = order.is_buy_order ? book.buy : book.sell;
-  const here = side.filter(o => o.locationId === order.location_id);
-  if (!here.length) return null;   // book unavailable for this station entirely
-  // Books are sorted best-first and filtering by station preserves that, so the
-  // head is the best offer. No volume percentile here: a one-unit troll order
-  // still beats you in the client's sort, which is what a trader is reacting to.
-  return here[0].price;
+  return side.filter(o => o.locationId === order.location_id && !myOrderIds.has(o.orderId));
 }
 
 
-// How many live orders (ours included) sit on this order's own side at this
-// order's own station. Distinct from stationBestRef: holding the best price
-// with a count of 1 means nobody else is even listed there ("solo"), while a
-// count > 1 means we're the best against real, visible competition — two
-// states a trader wants to tell apart even though both land on 0% by price.
-function stationOfferCount(regionBooks, order) {
+// Whether we can actually see this station's book. Our own order is live by
+// definition, so a book we can genuinely read must contain it; if it doesn't,
+// we're looking at a structure we lack market access to, or a stale cache.
+// Before rivals were filtered out this was implicit — an empty station list
+// meant unreadable — but with our own orders removed an empty list is the
+// expected "solo" case, so readability now needs its own signal.
+function stationBookReadable(regionBooks, order) {
   const book = regionBooks[order.region_id]?.[order.type_id];
-  if (!book) return null;
+  if (!book) return false;
   const side = order.is_buy_order ? book.buy : book.sell;
-  return side.filter(o => o.locationId === order.location_id).length;
+  return side.some(o => o.orderId === order.order_id);
+}
+
+
+// The order ids held across every logged-in character. Built once per render,
+// not per row — the roster is identical for every row, and an id set is what
+// makes "is this mine?" an exact match instead of a price heuristic.
+function myOrderIdSet(orders) {
+  return new Set(orders.map(o => o.order_id));
 }
 
 
@@ -1662,7 +1675,7 @@ function resolveMarkupPct(rules, typeId) {
 // The one place margin math lives. Sell margins are net of broker fee + sales
 // tax against pooled avg cost; buy "margin" is distance under the reference
 // (no basis involved — a buy order is acquisition, not liquidation).
-function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef, soloAtStation) {
+function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef, bookReadable) {
   const markupPct = resolveMarkupPct(rules, order.type_id);
   const m = markupPct / 100;
   const avgCost = basisEntry?.avgCost ?? null;
@@ -1686,20 +1699,32 @@ function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef, soloAtStat
   // so it stays populated even when marginPct is n/a for lack of purchase history.
   const vsJitaPct = ref != null && ref > 0 ? (order.price - ref) / ref * 100 : null;
 
-  // Distance from the best LIVE offer on our own side at our own station.
-  // stationBestRef includes our own posting, so 0 means nothing has beaten us —
-  // whether we're tied with a rival or the only one there. Sells read >= 0 (how
-  // far above the cheapest we sit), buys read <= 0 (how far below the top bid);
-  // either way, further from zero is worse.
+  // Distance from the best RIVAL offer on our own side at our own station —
+  // bestRef excludes every order of ours, so this is always a real competitor.
+  // Sells read positive when we're beaten and negative when we're ahead; buys
+  // the reverse. The sign for the beaten direction is unchanged from when this
+  // ref included our own posting, so nothing a reader already knows inverts.
   const vsBestPct = bestRef != null && bestRef > 0 ? (order.price - bestRef) / bestRef * 100 : null;
 
-  // "Solo" is a distinct state from "beat everyone": it means nobody else is
-  // even listed at this station on this side, so 0% would overstate what was
-  // actually accomplished. Only meaningful once we know the book at all —
-  // soloAtStation is undefined/null when bestRef itself is null.
-  const isSolo = bestRef != null && soloAtStation === 1;
+  // Five states, decided here rather than in the render so the export and any
+  // later consumer share one definition, and so they're testable without HTML.
+  //
+  // "Solo" is distinct from "beat everyone": nobody else is listed at all, so a
+  // percentage would overstate what was accomplished. It is only meaningful for
+  // a book we can actually read — otherwise absence of rivals proves nothing.
+  //
+  // "Tied" is distinct from winning: a rival sitting on our exact price is
+  // already splitting sales with us, which is worth seeing.
+  const vsBestState =
+      !bookReadable            ? "unreadable"
+    : vsBestPct == null        ? "solo"
+    : vsBestPct === 0          ? "tied"
+    : (order.is_buy_order ? vsBestPct < 0 : vsBestPct > 0) ? "beaten"
+    :                            "winning";
+  const isSolo = vsBestState === "solo";
 
-  return { target, delta, impact, marginPct, estProfit, vsJitaPct, vsBestPct, isSolo, avgCost, basisState, markupPct };
+  return { target, delta, impact, marginPct, estProfit, vsJitaPct, vsBestPct, vsBestState,
+            isSolo, avgCost, basisState, markupPct };
 }
 
 
@@ -1786,14 +1811,18 @@ async function refreshOrders() {
 }
 
 
-// rules/fees are passed in, not loaded here — this runs once per row and both
-// reads hit localStorage / the DOM.
-function orderRowView(o, rules, fees) {
+// rules/fees/myOrderIds are passed in, not derived here — this runs once per
+// row, and both rules/fees reads hit localStorage / the DOM while myOrderIds is
+// identical for every row.
+function orderRowView(o, rules, fees, myOrderIds) {
   const book  = ordersState.books[o.type_id] ?? { sell: [], buy: [] };
   const ref   = jitaRefPrice(book.sell, book.buy);
-  const bestRef = stationBestRef(ordersState.regionBooks ?? {}, o);
-  const soloAtStation = stationOfferCount(ordersState.regionBooks ?? {}, o);
-  const d     = deriveOrderRow(o, ordersState.basis[o.type_id], ref, rules, fees, bestRef, soloAtStation);
+  const rivals = stationRivals(ordersState.regionBooks ?? {}, o, myOrderIds);
+  // No rivals is a state, not a missing value: bestRef stays null and the
+  // derivation reads that as "solo" once it knows the book was readable.
+  const bestRef = rivals?.length ? rivals[0].price : null;
+  const bookReadable = stationBookReadable(ordersState.regionBooks ?? {}, o);
+  const d     = deriveOrderRow(o, ordersState.basis[o.type_id], ref, rules, fees, bestRef, bookReadable);
   return { o, ref, bestRef, ...d };
 }
 
@@ -1951,7 +1980,7 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
     "Broker Fee %", fees.brokerFee * 100, "Sales Tax %", fees.salesTax * 100];
   aoa[3] = [];
   aoa[ORDERS_XLSX_HEADER_ROW] = ["Character", "Item", "Side", "Station", "Qty Remain", "Qty Total",
-    "Your Price", "Avg Cost", "Jita Ref", "vs Jita %", "Best Offer", "vs Best %", "Markup %",
+    "Your Price", "Avg Cost", "Jita Ref", "vs Jita %", "Best Rival Offer", "vs Best %", "Markup %",
     "Target", "Delta", "Impact", "Margin %", "Est. Profit"];
 
   const formulas = [];
@@ -2019,7 +2048,8 @@ function exportOrdersToExcel() {
   if (!ordersState.orders.length) { alert("No orders to export — refresh orders first."); return; }
   const rules = loadOrderRules();
   const fees = currentFees();
-  const rows = ordersState.orders.map(o => orderRowView(o, rules, fees));
+  const myOrderIds = myOrderIdSet(ordersState.orders);
+  const rows = ordersState.orders.map(o => orderRowView(o, rules, fees, myOrderIds));
   const plan = buildOrdersExportPlan(rows, rules, fees, ordersState.typeNames, ordersState.names);
 
   const ws = XLSX.utils.aoa_to_sheet(plan.aoa);
@@ -2101,7 +2131,10 @@ function renderOrdersTable() {
   // isSolo only exists once a row is derived (it needs the region book), so
   // the solo filter is applied post-derivation rather than joining the other
   // two filters above.
-  const rows = filteredOrders.map(o => orderRowView(o, rules, fees))
+  // Built from the FULL order list, not the filtered one: a station filter must
+  // not turn one of our own hidden orders into a rival of the row we're showing.
+  const myOrderIds = myOrderIdSet(ordersState.orders);
+  const rows = filteredOrders.map(o => orderRowView(o, rules, fees, myOrderIds))
     .filter(r => !ordersFilterSoloOnly || r.isSolo);
   const key = ordersSortKey;
   const val = r => key === "character" ? r.o.characterName
@@ -2139,32 +2172,27 @@ function renderOrdersTable() {
       ? ` <span title="Ledger starts mid-history for this item — average may be wrong, margin suppressed" style="color:#e0a040;font-size:10px">partial</span>` : "";
     const marginCls = r.marginPct == null ? "" : r.marginPct > 0 ? "profit-pos" : "profit-neg";
     const vsJitaCls = r.vsJitaPct == null ? "" : r.vsJitaPct > 0 ? "profit-pos" : "profit-neg";
-    // Zero is the good state here, not "neutral": it means nobody has undercut
-    // or outbid you. bestRef INCLUDES our own posting, so "nobody beat me"
-    // lands on exactly 0 by construction — which makes any tolerance band
-    // around zero actively harmful. The standard undercut in this game is a
-    // hair (0.01 ISK, or a few hundredths of a percent), so a band wide enough
-    // to swallow it greens out precisely the case this column exists to catch.
-    // Test the DIRECTION instead: a sell is beaten only when priced above the
-    // best offer, a buy only when bidding below the best bid. Reading the wrong
-    // way round (sell under the station best) means our own order is missing
-    // from the book, i.e. we're cheapest — a win, not a loss.
-    const vsBestBeaten = r.vsBestPct == null ? false
-      : o.is_buy_order ? r.vsBestPct < 0 : r.vsBestPct > 0;
-    // "Solo" gets its own muted style — it's not a competitive win, just the
-    // absence of anyone to compete with, so it shouldn't read as visually
-    // equivalent to "beat real competitors" (green) or "beaten" (red).
-    const vsBestCls = r.isSolo || r.vsBestPct == null ? "" : vsBestBeaten ? "profit-neg" : "profit-pos";
-    // Rounding a real undercut to "0.0%" is the same lie in numeric form, so
-    // print the bound rather than a zero we know to be false. The exact price
-    // to beat is already one column to the left.
-    const vsBestRounded = vsBestBeaten && Math.abs(r.vsBestPct) < 0.05;
-    const vsBestText = r.vsBestPct == null ? "—"
-      : vsBestRounded ? (o.is_buy_order ? "&gt;-0.1%" : "&lt;0.1%")
-      : r.vsBestPct.toFixed(1) + "%";
+    // Four visible states plus "can't tell", all decided in deriveOrderRow.
+    // "Solo" gets a muted style — it's not a competitive win, just the absence
+    // of anyone to compete with. "Tied" gets its own colour because a rival on
+    // our exact price is splitting sales with us: neither a win nor a loss.
+    const vsBestCls = { beaten: "profit-neg", winning: "profit-pos", tied: "profit-tie" }[r.vsBestState] ?? "";
+    // 0.0% is now the specific claim "tied", so it must never be printed for
+    // anything else. A gap too fine for one decimal prints its bound instead of
+    // a zero we know to be false — the price to beat is one column to the left.
+    const vsBestRounded = (r.vsBestState === "beaten" || r.vsBestState === "winning")
+      && Math.abs(r.vsBestPct) < 0.05;
+    const vsBestText =
+        r.vsBestState === "unreadable" ? "—"
+      : r.vsBestState === "solo"       ? "solo"
+      : vsBestRounded                  ? (r.vsBestPct < 0 ? "&gt;-0.1%" : "&lt;0.1%")
+      :                                  r.vsBestPct.toFixed(1) + "%";
     const vsBestStyle = r.isSolo ? ` style="color:var(--text-dim);font-style:italic"` : "";
-    const vsBestTitle = r.isSolo ? ` title="No competing orders are listed at this station"`
-      : vsBestRounded ? ` title="Undercut by less than 0.1% — ${escHtml(Math.abs(r.vsBestPct).toPrecision(2))}% behind the best offer here"`
+    const vsBestTitle =
+        r.vsBestState === "solo"       ? ` title="No other player has an order on this side at this station"`
+      : r.vsBestState === "unreadable" ? ` title="This station's market book can't be read, so there is nothing to compare against"`
+      : r.vsBestState === "tied"       ? ` title="A rival is listed at your exact price"`
+      : vsBestRounded ? ` title="${r.vsBestState === "beaten" ? "Behind" : "Ahead of"} the best rival offer by ${escHtml(Math.abs(r.vsBestPct).toPrecision(2))}%"`
       : "";
     const copyCell = v => v == null ? "—"
       : `<span style="cursor:pointer;text-decoration:underline dotted" title="Click to copy"
@@ -2182,7 +2210,7 @@ function renderOrdersTable() {
         : "—"}${badge}</td>
       <td class="col-num">${r.ref != null ? money(r.ref) : "—"}</td>
       <td class="col-num ${vsJitaCls}">${r.vsJitaPct != null ? r.vsJitaPct.toFixed(1) + "%" : "—"}</td>
-      <td class="col-num ${vsBestCls}"${vsBestStyle}${vsBestTitle}>${r.isSolo ? "solo" : vsBestText}</td>
+      <td class="col-num ${vsBestCls}"${vsBestStyle}${vsBestTitle}>${vsBestText}</td>
       <td class="col-num"><input type="number" class="shop-input" style="width:60px" step="1"
             value="${override ?? ""}" placeholder="${rules.globalPct}"
             onchange="setOrderMarkup(${o.type_id}, parseFloat(this.value))"></td>

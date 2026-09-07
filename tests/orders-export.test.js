@@ -65,7 +65,7 @@ const { run, check, summary } = require("./harness");
 
   check("header row matches the 18-column layout", JSON.stringify(r2.header) ===
     JSON.stringify(["Character","Item","Side","Station","Qty Remain","Qty Total","Your Price",
-      "Avg Cost","Jita Ref","vs Jita %","Best Offer","vs Best %","Markup %",
+      "Avg Cost","Jita Ref","vs Jita %","Best Rival Offer","vs Best %","Markup %",
       "Target","Delta","Impact","Margin %","Est. Profit"]));
   check("settings row holds global markup and fees as percent values",
         JSON.stringify(r2.settingsRow) === '["Global Markup %",20,"Broker Fee %",3,"Sales Tax %",3]');

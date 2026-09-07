@@ -2,7 +2,7 @@
 // fetchStructureBooksInto: access-restricted citadel markets are absent from the
 // public /markets/{region}/orders/ feed entirely, so orders posted in one have
 // no competing book unless we ask the structure directly. Results merge INTO the
-// region books so stationBestRef stays a single lookup.
+// region books so the station lookups stay a single lookup.
 const { run, check, summary } = require("./harness");
 
 const CITADEL = 1_035_949_018_593;   // >= 1e12 → player structure
@@ -49,8 +49,9 @@ const page2 = [
       sell: book.sell.map(o => ({ price: o.price, locationId: o.locationId, orderId: o.orderId })),
       buy:  book.buy.map(o => o.price),
       otherTypeFetched: regionBooks[10000047]?.[9999] !== undefined,
-      bestForOurOrder: stationBestRef(regionBooks,
-        { order_id: 10, region_id: 10000047, type_id: 2929, location_id: ${CITADEL}, is_buy_order: false }),
+      bestForOurOrder: stationRivals(regionBooks,
+        { order_id: 10, region_id: 10000047, type_id: 2929, location_id: ${CITADEL}, is_buy_order: false },
+        myOrderIdSet(orders))[0].price,
     };
   `;
   const r = await run(body, { fetch: fetchStub });
@@ -60,14 +61,14 @@ const page2 = [
   check("both pages walked", calls.filter(u => u.includes("/markets/structures/")).length === 2);
   check("NPC station needs no structure request", !calls.some(u => u.includes(String(NPC))));
   check("sell side sorted best-first", JSON.stringify(r.sell.map(o => o.price)) === "[4300000,5485000]");
-  check("locationId stamped so stationBestRef can filter by station",
+  check("locationId stamped so the station lookups can filter by station",
         r.sell.every(o => o.locationId === CITADEL));
   check("orderId retained", r.sell[0].orderId === 11);
   check("types we hold no order for are discarded", r.otherTypeFetched === false);
   check("no warnings when the book loads", r.warnings.length === 0);
   // The whole point: our 5,485,000 order is undercut at 4,300,000, which the
   // public region feed could never have told us.
-  check("stationBestRef now resolves inside a restricted citadel", r.bestForOurOrder === 4_300_000);
+  check("the rival's price now resolves inside a restricted citadel", r.bestForOurOrder === 4_300_000);
 
   // ── A public structure is served by BOTH feeds — the same order must not be
   // counted twice, which would distort the book.

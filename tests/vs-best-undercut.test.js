@@ -74,12 +74,14 @@ function doc() {
   check("being outbid by a hair does not claim a flat 0.0%",
         !r.outbid.includes('profit-neg">0.0%'));
 
-  // The states that must keep reading as wins — a fix that reds everything is
-  // just as useless as one that greens everything.
-  check("actually holding the cheapest offer still reads 0.0%",
-        r.winning.includes('col-num profit-pos">0.0%'));
-  check("an exact tie with a rival still reads as a winning 0.0%",
-        r.tied.includes('col-num profit-pos">0.0%'));
+  // The states that must NOT read as losses — a fix that reds everything is
+  // just as useless as one that greens everything. Since rivals are now
+  // measured without our own orders, a win carries its headroom (200 against a
+  // rival at 210 → -4.8%) and 0.0% is reserved for an exact tie.
+  check("actually holding the cheapest offer reads as a win, with headroom",
+        r.winning.includes('class="col-num profit-pos"') && r.winning.includes('>-4.8%</td>'));
+  check("an exact tie with a rival is called out rather than painted as a win",
+        r.tied.includes('class="col-num profit-tie"') && r.tied.includes('>0.0%</td>'));
 
   summary("vs-best-undercut");
 })();

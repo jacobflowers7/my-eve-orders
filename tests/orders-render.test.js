@@ -41,7 +41,7 @@ function doc() {
           buy: [],
         },
         // Order #2 (buy, 90) IS the top bid at its station — nobody has outbid
-        // it, so it must read exactly 0.0%, not the gap to the 80 runner-up.
+        // it, so it reads as headroom over the 80 runner-up, not as a tie.
         35: {
           sell: [],
           buy: [ { price: 90, remain: 100, locationId: 60008494, orderId: 2 },
@@ -106,15 +106,18 @@ function doc() {
   check("vs-Best % measured against the cheapest offer at the same station", r.html.includes("8.3%"));
   check("vs-Best % ignores cheaper offers at OTHER stations in the region", !r.html.includes("18.2%"));
   check("being beaten renders as a loss color", r.html.includes('col-num profit-neg">8.3%'));
-  // order #2: holds the top bid → 0.0%, and that is the WINNING state, so green
-  check("holding the best price reads exactly 0.0%", r.html.includes("0.0%"));
-  check("0.0% is colored as winning, not as a loss", r.html.includes('col-num profit-pos">0.0%'));
+  // order #2: holds the top bid over a rival at 80 → (90-80)/80*100 = +12.5%.
+  // bestRef is the best RIVAL offer, so winning carries the gap instead of a
+  // flat 0.0% — that reading is now reserved for an exact tie with a rival.
+  check("holding the top bid shows the headroom over the nearest rival", r.html.includes("12.5%"));
+  check("winning is colored as a win", r.html.includes('col-num profit-pos">12.5%'));
+  check("winning no longer masquerades as a tie", !r.html.includes('>0.0%<'));
   // order #3 (type 36): no region book at all → nothing to compare against
   check("unreadable station book still renders an em dash, not NaN", r.html.includes(">—<"));
   // order #4: the only offer at its station — a distinct state from a real
   // 0% tie, so it must show the word "solo" instead of a percentage.
   check("solo listing shows the word 'solo', not 0.0%", r.html.includes(">solo<"));
-  check("solo listing is not painted with the winning-tie green", !r.html.includes('profit-pos">solo'));
+  check("solo listing is not painted with the winning green", !r.html.includes('profit-pos">solo'));
   // order #1: delta=-10 (target 120 < price 130), impact=|−10|×10=100 → cell must
   // carry the loss color even though impact itself is an unsigned magnitude
   check("impact cell colored by delta's direction, not left neutral",

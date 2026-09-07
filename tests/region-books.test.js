@@ -48,9 +48,9 @@ const { run, check, summary } = require("./harness");
   check("failed type yields empty books, not a crash", JSON.stringify(r.failed) === '{"sell":[],"buy":[]}');
   check("one region key even with two types requested in it", r.onlyOneRegionKey === 1);
 
-  // stationBestRef: best offer on the order's own side at its own station.
-  // Our own posting is INCLUDED on purpose — the question is "has anyone beaten
-  // me here?", so holding the best price must resolve to our own price.
+  // stationRivals: the competing offers on the order's own side at its own
+  // station. Our OWN orders are excluded — holding two orders at one station
+  // must not make the dearer one look "beaten", nor defeat the solo check.
   const r2 = await run(`
     const regionBooks = {
       10000002: { 34: {
@@ -61,60 +61,44 @@ const { run, check, summary } = require("./harness");
                 { price: 470, remain: 5,  locationId: 60003760, orderId: 5 } ],
       } },
     };
-    const beatenSell = { order_id: 2, region_id: 10000002, type_id: 34, location_id: 60003760, is_buy_order: false };
-    const bestSell   = { order_id: 1, region_id: 10000002, type_id: 34, location_id: 60003760, is_buy_order: false };
-    // Order 3 is the only sell at 60008494 — with self included it is its own best offer
-    const loneSeller = { order_id: 3, region_id: 10000002, type_id: 34, location_id: 60008494, is_buy_order: false };
-    const topBid     = { order_id: 4, region_id: 10000002, type_id: 34, location_id: 60003760, is_buy_order: true };
-    const outbid     = { order_id: 5, region_id: 10000002, type_id: 34, location_id: 60003760, is_buy_order: true };
-    const emptyStation = { order_id: 99, region_id: 10000002, type_id: 34, location_id: 60011866, is_buy_order: false };
-    const unknownType  = { order_id: 1, region_id: 10000002, type_id: 999, location_id: 60003760, is_buy_order: false };
+    // Ours: sell 2 (510) and sell 3 (495, alone at its station), buy 5 (470).
+    const mine = new Set([2, 3, 5]);
+    const at = (order_id, location_id, is_buy_order, type_id) =>
+      ({ order_id, region_id: 10000002, type_id: type_id ?? 34, location_id, is_buy_order });
+    const beatenSell   = at(2, 60003760, false);
+    const loneSeller   = at(3, 60008494, false);
+    const outbid       = at(5, 60003760, true);
+    const emptyStation = at(99, 60011866, false);
+    const unknownType  = at(1, 60003760, false, 999);
     return {
-      beatenSell: stationBestRef(regionBooks, beatenSell),   // 500 undercuts our 510
-      bestSell:   stationBestRef(regionBooks, bestSell),     // we ARE the 500 → our own price
-      loneSeller: stationBestRef(regionBooks, loneSeller),   // only offer there → itself
-      topBid:     stationBestRef(regionBooks, topBid),       // highest buy is ours
-      outbid:     stationBestRef(regionBooks, outbid),       // 480 outbids our 470
-      emptyStation: stationBestRef(regionBooks, emptyStation),
-      unknown:      stationBestRef(regionBooks, unknownType),
+      beatenSell:  stationRivals(regionBooks, beatenSell, mine).map(o => o.price),
+      loneSeller:  stationRivals(regionBooks, loneSeller, mine).map(o => o.price),
+      outbid:      stationRivals(regionBooks, outbid, mine).map(o => o.price),
+      emptyStation: stationRivals(regionBooks, emptyStation, mine),
+      unknown:      stationRivals(regionBooks, unknownType, mine),
+      // Readability: our own live order must appear in a book we can read.
+      readableOurs:    stationBookReadable(regionBooks, beatenSell),
+      readableAbsent:  stationBookReadable(regionBooks, emptyStation),
+      readableUnknown: stationBookReadable(regionBooks, unknownType),
     };
   `);
-  check("beaten sell references the cheapest offer at its station", r2.beatenSell === 500);
-  check("best sell references its own price, so the comparison lands on 0%", r2.bestSell === 500);
-  check("lone seller is its own best offer (0%), not a blank", r2.loneSeller === 495);
-  check("buy side takes the HIGHEST bid, not the lowest", r2.topBid === 480 && r2.outbid === 480);
-  check("filters to the order's own station, not the whole region", r2.beatenSell !== 495);
-  check("station with no book at all → null", r2.emptyStation === null);
+  check("our own order is not in our own competition set",
+        JSON.stringify(r2.beatenSell) === "[500]");
+  check("rivals stay sorted best-first, so the head is the price to beat",
+        r2.beatenSell[0] === 500);
+  check("a station holding only our own order has no rivals at all",
+        JSON.stringify(r2.loneSeller) === "[]");
+  check("buy side takes the rival bids, ours excluded",
+        JSON.stringify(r2.outbid) === "[480]");
+  check("filters to the order's own station, not the whole region",
+        !r2.beatenSell.includes(495));
+  check("station with a book but nothing at that location → [], not null",
+        JSON.stringify(r2.emptyStation) === "[]");
   check("unknown region/type pair → null, no crash", r2.unknown === null);
+  check("book containing our own order is readable", r2.readableOurs === true);
+  check("book missing our own order is NOT readable — an empty rival list there proves nothing",
+        r2.readableAbsent === false);
+  check("missing region/type book is not readable", r2.readableUnknown === false);
 
-  // stationOfferCount: how many live orders (ours included) sit at that
-  // station on that side — the input isSolo is derived from.
-  const r3 = await run(`
-    const regionBooks = {
-      10000002: { 34: {
-        sell: [ { price: 495, remain: 5,  locationId: 60008494, orderId: 3 },
-                { price: 500, remain: 10, locationId: 60003760, orderId: 1 },
-                { price: 510, remain: 10, locationId: 60003760, orderId: 2 } ],
-        buy:  [ { price: 480, remain: 5,  locationId: 60003760, orderId: 4 } ],
-      } },
-    };
-    const crowdedSell = { order_id: 1, region_id: 10000002, type_id: 34, location_id: 60003760, is_buy_order: false };
-    const loneSeller   = { order_id: 3, region_id: 10000002, type_id: 34, location_id: 60008494, is_buy_order: false };
-    const loneBuyer     = { order_id: 4, region_id: 10000002, type_id: 34, location_id: 60003760, is_buy_order: true };
-    const emptyStation = { order_id: 99, region_id: 10000002, type_id: 34, location_id: 60011866, is_buy_order: false };
-    const unknownType  = { order_id: 1, region_id: 10000002, type_id: 999, location_id: 60003760, is_buy_order: false };
-    return {
-      crowdedSell: stationOfferCount(regionBooks, crowdedSell),
-      loneSeller:  stationOfferCount(regionBooks, loneSeller),
-      loneBuyer:   stationOfferCount(regionBooks, loneBuyer),
-      emptyStation: stationOfferCount(regionBooks, emptyStation),
-      unknown:      stationOfferCount(regionBooks, unknownType),
-    };
-  `);
-  check("two sells at the same station count as 2", r3.crowdedSell === 2);
-  check("a station with only our own sell counts as 1 (solo)", r3.loneSeller === 1);
-  check("a station with only our own buy counts as 1 (solo)", r3.loneBuyer === 1);
-  check("station with a book but nothing at that location → 0, not null", r3.emptyStation === 0);
-  check("unknown region/type pair → null, no crash", r3.unknown === null);
   summary("region-books");
 })();
