@@ -24,15 +24,19 @@ const { run, check, summary } = require("./harness");
       zeroFees: deriveOrderRow(sell, basis, 100, rules, { brokerFee: 0, salesTax: 0 }),
       belowRef: deriveOrderRow({ ...sell, price: 90 }, basis, 100, rules, fees),
       // bestRef is the 6th positional param that ref/basis math doesn't touch —
-      // must be independent of, and not confused with, the Jita ref (100 here)
-      beaten:     deriveOrderRow(sell, basis, 100, rules, fees, 110, 3),
-      sellAtBest: deriveOrderRow(sell, basis, 100, rules, fees, 130, 2),   // best, but tied against a real rival
-      buyAtBest:  deriveOrderRow({ ...buy, price: 130 }, basis, 100, rules, fees, 130, 2),
-      buyOutbid:  deriveOrderRow({ ...buy, price: 130 }, basis, 100, rules, fees, 140, 2),
-      noBestRef:  deriveOrderRow(sell, basis, 100, rules, fees, null, null),
-      // soloAtStation === 1: nobody else is listed there at all
-      soloSell:   deriveOrderRow(sell, basis, 100, rules, fees, 130, 1),
-      soloBuy:    deriveOrderRow({ ...buy, price: 130 }, basis, 100, rules, fees, 130, 1),
+      // must be independent of, and not confused with, the Jita ref (100 here).
+      // It is the best RIVAL offer: our own orders are filtered out upstream,
+      // so any value here belongs to another player. The 7th param says whether
+      // the station's book could be read at all.
+      beaten:     deriveOrderRow(sell, basis, 100, rules, fees, 110, true),
+      sellAtBest: deriveOrderRow(sell, basis, 100, rules, fees, 130, true),   // rival on our exact price
+      buyAtBest:  deriveOrderRow({ ...buy, price: 130 }, basis, 100, rules, fees, 130, true),
+      buyOutbid:  deriveOrderRow({ ...buy, price: 130 }, basis, 100, rules, fees, 140, true),
+      winning:    deriveOrderRow(sell, basis, 100, rules, fees, 150, true),   // cheapest, by 13.3%
+      noBestRef:  deriveOrderRow(sell, basis, 100, rules, fees, null, false),
+      // No rival offer, but the book WAS readable: nobody else is listed here.
+      soloSell:   deriveOrderRow(sell, basis, 100, rules, fees, null, true),
+      soloBuy:    deriveOrderRow({ ...buy, price: 130 }, basis, 100, rules, fees, null, true),
     };
   `);
 
@@ -72,22 +76,37 @@ const { run, check, summary } = require("./harness");
 
   // vsBestPct: price=130, bestRef=110 → (130-110)/110*100 = 18.18...
   check("vsBestPct computed from bestRef, not the Jita ref", Math.abs(r.beaten.vsBestPct - 18.1818) < 1e-3);
-  // The whole point of including our own order in stationBestRef: holding the
-  // best price must land on exactly 0, not on the distance to the runner-up.
-  check("vsBestPct: sell holding the best price is exactly 0", r.sellAtBest.vsBestPct === 0);
-  check("vsBestPct: buy holding the top bid is exactly 0", r.buyAtBest.vsBestPct === 0);
+  // bestRef is the best RIVAL offer, so landing on exactly 0 means a competitor
+  // is sitting on our exact price — a tie, which is not a win.
+  check("vsBestPct: sell level with a rival is exactly 0", r.sellAtBest.vsBestPct === 0);
+  check("vsBestPct: buy level with a rival is exactly 0", r.buyAtBest.vsBestPct === 0);
   // Buys read negative when beaten — someone is bidding above us.
   check("vsBestPct: outbid buy is negative", Math.abs(r.buyOutbid.vsBestPct - (-7.1428)) < 1e-3);
-  check("vsBestPct: sells never read negative (best is <= our price)", r.beaten.vsBestPct > 0);
+  check("vsBestPct: a beaten sell reads positive", r.beaten.vsBestPct > 0);
+  // Winning carries the headroom now: 130 against a rival at 150 → -13.3%
+  check("vsBestPct: a winning sell reads negative — that is our headroom",
+        Math.abs(r.winning.vsBestPct - (-13.3333)) < 1e-3);
   check("vsBestPct: null when bestRef missing (station book unreadable)", r.noBestRef.vsBestPct === null);
   check("vsBestPct: omitted bestRef arg is also null, doesn't crash", r.sellRow.vsBestPct === null);
 
-  // isSolo: distinguishes "best against nobody" from "best against real rivals"
-  check("isSolo: true only when exactly one order (ours) sits at the station", r.soloSell.isSolo === true);
+  // vsBestState: the five states the column renders from, decided here so the
+  // render and the export cannot drift apart.
+  check("vsBestState: beaten when a rival is ahead of us", r.beaten.vsBestState === "beaten");
+  check("vsBestState: tied when a rival sits on our exact price", r.sellAtBest.vsBestState === "tied");
+  check("vsBestState: tied on the buy side too", r.buyAtBest.vsBestState === "tied");
+  check("vsBestState: beaten when outbid", r.buyOutbid.vsBestState === "beaten");
+  check("vsBestState: winning when we are ahead of every rival", r.winning.vsBestState === "winning");
+  check("vsBestState: solo when a readable book holds no rival", r.soloSell.vsBestState === "solo");
+  check("vsBestState: unreadable when the station's book can't be read",
+        r.noBestRef.vsBestState === "unreadable");
+
+  // isSolo: distinguishes "nobody else is here" from "best against real rivals"
+  check("isSolo: true when a readable book holds no rival order", r.soloSell.isSolo === true);
   check("isSolo: true for a solo buy order too", r.soloBuy.isSolo === true);
-  check("isSolo: false when tied for best against a real competitor", r.sellAtBest.isSolo === false);
+  check("isSolo: false when tied against a real competitor", r.sellAtBest.isSolo === false);
   check("isSolo: false when beaten (not the best at all)", r.beaten.isSolo === false);
-  check("isSolo: false when bestRef is missing entirely (book unreadable)", r.noBestRef.isSolo === false);
-  check("isSolo: false when soloAtStation arg is omitted, doesn't crash", r.sellRow.isSolo === false);
+  check("isSolo: false when the book is unreadable — absence of rivals proves nothing",
+        r.noBestRef.isSolo === false);
+  check("isSolo: false when the readability arg is omitted, doesn't crash", r.sellRow.isSolo === false);
   summary("order-derive");
 })();
