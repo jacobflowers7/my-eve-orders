@@ -1435,14 +1435,27 @@ async function fetchJitaBooksForTypes(typeIds) {
     await Promise.all(unique.slice(i, i + BATCH).map(async typeId => {
       const out = { sell: [], buy: [] };
       books[typeId] = out;
+      const url = page =>
+        `${ESI}/markets/${JITA_REGION}/orders/?type_id=${typeId}&order_type=all&datasource=tranquility&page=${page}`;
       try {
-        const r = await esiFetchRetry(
-          `${ESI}/markets/${JITA_REGION}/orders/?type_id=${typeId}&order_type=all&datasource=tranquility`);
-        if (!r?.ok) return;
-        for (const o of await r.json()) {
+        const first = await esiFetchRetry(url(1));
+        if (!first?.ok) return;
+        // The region feed pages at 1000 orders and is NOT price-sorted, so
+        // stopping at page 1 leaves an arbitrary subset: a competitor cheaper
+        // than us could be dropped while our own order is kept, and the book
+        // would then read as if we held the best price. Follow X-Pages.
+        let rows = await first.json();
+        const pages = parseInt(first.headers?.get?.("X-Pages") || "1");
+        for (let p = 2; p <= pages; p++) {
+          const r = await esiFetchRetry(url(p));
+          if (r?.ok) rows = rows.concat(await r.json());
+        }
+        for (const o of rows) {
           if (o.location_id !== JITA_44) continue;   // Jita 4-4 only — the hub, not the region
           (o.is_buy_order ? out.buy : out.sell).push({ price: o.price, remain: o.volume_remain });
         }
+        // Sorted once, after every page is in — a per-page sort would only
+        // order each slice against itself.
         out.sell.sort((a, b) => a.price - b.price);
         out.buy.sort((a, b) => b.price - a.price);
       } catch {}
@@ -1465,14 +1478,24 @@ async function fetchRegionBooksForPairs(pairs) {
     await Promise.all(unique.slice(i, i + BATCH).map(async ({ regionId, typeId }) => {
       const out = { sell: [], buy: [] };
       (books[regionId] ??= {})[typeId] = out;
+      const url = page =>
+        `${ESI}/markets/${regionId}/orders/?type_id=${typeId}&order_type=all&datasource=tranquility&page=${page}`;
       try {
-        const r = await esiFetchRetry(
-          `${ESI}/markets/${regionId}/orders/?type_id=${typeId}&order_type=all&datasource=tranquility`);
-        if (!r?.ok) return;
-        for (const o of await r.json()) {
+        const first = await esiFetchRetry(url(1));
+        if (!first?.ok) return;
+        // Paginated at 1000 orders and unsorted — same truncation hazard as
+        // fetchJitaBooksForTypes, so page through X-Pages here too.
+        let rows = await first.json();
+        const pages = parseInt(first.headers?.get?.("X-Pages") || "1");
+        for (let p = 2; p <= pages; p++) {
+          const r = await esiFetchRetry(url(p));
+          if (r?.ok) rows = rows.concat(await r.json());
+        }
+        for (const o of rows) {
           (o.is_buy_order ? out.buy : out.sell).push(
             { price: o.price, remain: o.volume_remain, locationId: o.location_id, orderId: o.order_id });
         }
+        // Sorted once the whole book is assembled, not per page.
         out.sell.sort((a, b) => a.price - b.price);
         out.buy.sort((a, b) => b.price - a.price);
       } catch {}
