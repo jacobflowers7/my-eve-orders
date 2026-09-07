@@ -354,7 +354,7 @@
         <th class="col-num" onclick="setOrdersSort('avgCost')" title="Weighted-average price paid, pooled across all characters">Avg Cost</th>
         <th class="col-num" onclick="setOrdersSort('ref')" title="Jita 4-4 sell price — 5% volume-weighted percentile of the sell book, so single-unit troll orders don't set it. Falls back to the buy side only when nothing is for sale at all.">Jita Ref</th>
         <th class="col-num" onclick="setOrdersSort('vsJita')" title="Your current posted price vs the Jita reference, right now — (price − ref) / ref × 100. Positive = priced above Jita. No cost-basis needed, so this stays populated even when Margin % is n/a.">vs Jita %</th>
-        <th class="col-num" onclick="setOrdersSort('vsBest')" title="Your price vs the BEST live offer on your own side (lowest sell / highest buy) at this exact station right now. 0% means you're tied for the best price against real competitors; &quot;solo&quot; means nobody else is even listed there. Sells read positive (how far above the cheapest you are), buys negative (how far below the top bid). Blank only when the station's book can't be read at all.">vs Best %<br><span id="orders-filter-vsbest" onclick="event.stopPropagation()"></span></th>
+        <th class="col-num" onclick="setOrdersSort('vsBest')" title="Your price vs the BEST live offer on your own side (lowest sell / highest buy) at this exact station right now. Green 0.0% means nobody has beaten you — you hold the best price or are tied for it; &quot;solo&quot; means nobody else is even listed there. ANY red value means a rival is ahead of you, however small: sells read positive (how far above the cheapest you are), buys negative (how far below the top bid), and an undercut too fine to show at one decimal reads &quot;&lt;0.1%&quot; rather than rounding to zero. Blank only when the station's book can't be read at all.">vs Best %<br><span id="orders-filter-vsbest" onclick="event.stopPropagation()"></span></th>
         <th class="col-num" title="Per-item markup % — blank uses the global rule">Markup %</th>
         <th class="col-num" onclick="setOrdersSort('target')" title="Ref × (1±markup). Click a value to copy it">Target</th>
         <th class="col-num" onclick="setOrdersSort('delta')" title="Target − your price: the amount to adjust your price by to hit Target. Click to copy">Δ Price</th>
@@ -2140,14 +2140,32 @@ function renderOrdersTable() {
     const marginCls = r.marginPct == null ? "" : r.marginPct > 0 ? "profit-pos" : "profit-neg";
     const vsJitaCls = r.vsJitaPct == null ? "" : r.vsJitaPct > 0 ? "profit-pos" : "profit-neg";
     // Zero is the good state here, not "neutral": it means nobody has undercut
-    // or outbid you. Tolerance matches the one-decimal display, so a cell
-    // reading "0.0%" is never painted as though you'd been beaten. "Solo" gets
-    // its own muted style — it's not a competitive win, just the absence of
-    // anyone to compete with, so it shouldn't read as visually equivalent to
-    // "beat real competitors" (green) or "beaten" (red).
-    const vsBestCls = r.isSolo ? "" : r.vsBestPct == null ? "" : Math.abs(r.vsBestPct) < 0.05 ? "profit-pos" : "profit-neg";
+    // or outbid you. bestRef INCLUDES our own posting, so "nobody beat me"
+    // lands on exactly 0 by construction — which makes any tolerance band
+    // around zero actively harmful. The standard undercut in this game is a
+    // hair (0.01 ISK, or a few hundredths of a percent), so a band wide enough
+    // to swallow it greens out precisely the case this column exists to catch.
+    // Test the DIRECTION instead: a sell is beaten only when priced above the
+    // best offer, a buy only when bidding below the best bid. Reading the wrong
+    // way round (sell under the station best) means our own order is missing
+    // from the book, i.e. we're cheapest — a win, not a loss.
+    const vsBestBeaten = r.vsBestPct == null ? false
+      : o.is_buy_order ? r.vsBestPct < 0 : r.vsBestPct > 0;
+    // "Solo" gets its own muted style — it's not a competitive win, just the
+    // absence of anyone to compete with, so it shouldn't read as visually
+    // equivalent to "beat real competitors" (green) or "beaten" (red).
+    const vsBestCls = r.isSolo || r.vsBestPct == null ? "" : vsBestBeaten ? "profit-neg" : "profit-pos";
+    // Rounding a real undercut to "0.0%" is the same lie in numeric form, so
+    // print the bound rather than a zero we know to be false. The exact price
+    // to beat is already one column to the left.
+    const vsBestRounded = vsBestBeaten && Math.abs(r.vsBestPct) < 0.05;
+    const vsBestText = r.vsBestPct == null ? "—"
+      : vsBestRounded ? (o.is_buy_order ? "&gt;-0.1%" : "&lt;0.1%")
+      : r.vsBestPct.toFixed(1) + "%";
     const vsBestStyle = r.isSolo ? ` style="color:var(--text-dim);font-style:italic"` : "";
-    const vsBestTitle = r.isSolo ? ` title="No competing orders are listed at this station"` : "";
+    const vsBestTitle = r.isSolo ? ` title="No competing orders are listed at this station"`
+      : vsBestRounded ? ` title="Undercut by less than 0.1% — ${escHtml(Math.abs(r.vsBestPct).toPrecision(2))}% behind the best offer here"`
+      : "";
     const copyCell = v => v == null ? "—"
       : `<span style="cursor:pointer;text-decoration:underline dotted" title="Click to copy"
            onclick="copyOrderPrice(${Math.round(v * 100) / 100}, this)">${money(v)}</span>`;
@@ -2164,7 +2182,7 @@ function renderOrdersTable() {
         : "—"}${badge}</td>
       <td class="col-num">${r.ref != null ? money(r.ref) : "—"}</td>
       <td class="col-num ${vsJitaCls}">${r.vsJitaPct != null ? r.vsJitaPct.toFixed(1) + "%" : "—"}</td>
-      <td class="col-num ${vsBestCls}"${vsBestStyle}${vsBestTitle}>${r.isSolo ? "solo" : r.vsBestPct != null ? r.vsBestPct.toFixed(1) + "%" : "—"}</td>
+      <td class="col-num ${vsBestCls}"${vsBestStyle}${vsBestTitle}>${r.isSolo ? "solo" : vsBestText}</td>
       <td class="col-num"><input type="number" class="shop-input" style="width:60px" step="1"
             value="${override ?? ""}" placeholder="${rules.globalPct}"
             onchange="setOrderMarkup(${o.type_id}, parseFloat(this.value))"></td>
