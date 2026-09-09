@@ -101,7 +101,8 @@ const fromIdOf = u => { const m = String(u).match(/from_id=(\d+)/); return m ? N
         s1.warnings.length === 1 && /incomplete/.test(s1.warnings[0]));
   check("interrupted sync still keeps what it fetched", s1.ledgerN === 100);
   const gaps1 = JSON.parse(store["myOrders.walletSyncGaps"]);
-  check("gap marker persisted for the character", gaps1["11"] === 201);
+  check("gap marker persisted for the character, as an array of resume points",
+        JSON.stringify(gaps1["11"]) === "[201]");
 
   // ── 5. Next sync resumes the backfill and clears the marker ───────────────
   // The "recent" walk finds only brand-new rows (400..391) and ends cleanly, so
@@ -131,6 +132,102 @@ const fromIdOf = u => { const m = String(u).match(/from_id=(\d+)/); return m ? N
         healCalls.some(u => fromIdOf(u) === 201));
   const gaps2 = JSON.parse(store["myOrders.walletSyncGaps"]);
   check("gap marker cleared once the backfill completed", gaps2["11"] === undefined);
+
+  // ── 6. A NEW gap opening while an OLD one is still unresolved must not
+  // discard the old one — the recent walk fails above the old marker, and the
+  // backfill resuming the old marker fails too, in the same sync.
+  const doubleGapStore = { "myOrders.walletSyncGaps": JSON.stringify({ 11: 201 }) };
+  const doubleGapStub = async (url) => {
+    const u = String(url);
+    if (!u.includes("/wallet/transactions")) return notOk();
+    const from = fromIdOf(u);
+    if (from === null) return okPage(Array.from({ length: 100 }, (_, i) => mkRow(500 - i, "2026-08-15T00:00:00Z")));
+    return notOk();   // both the recent walk's second page AND the backfill from 201 fail
+  };
+  const dg = await run(`
+    ssoChars = [${REC}];
+    const out = await syncAllWalletTx();
+    return { warnings: out.warnings };
+  `, { fetch: doubleGapStub, store: doubleGapStore });
+  check("both incomplete walks in one sync raise the incomplete warning",
+        dg.warnings.some(w => /incomplete/.test(w)));
+  const gapsDouble = JSON.parse(doubleGapStore["myOrders.walletSyncGaps"]);
+  check("BOTH the new gap (from the recent walk) and the old gap (from the backfill) survive",
+        JSON.stringify(gapsDouble["11"].sort((a, b) => a - b)) === "[201,401]");
+
+  // ── 7. Legacy single-number marker (pre-array persisted format) is still
+  // honored and normalized going forward.
+  const legacyStore = { "myOrders.walletSyncGaps": JSON.stringify({ 11: 201 }) };
+  const legacyStub = async (url) => {
+    const u = String(url);
+    if (!u.includes("/wallet/transactions")) return notOk();
+    const from = fromIdOf(u);
+    if (from === null) return okPage(Array.from({ length: 5 }, (_, i) => mkRow(1000 - i, "2026-08-20T00:00:00Z")));
+    if (from === 201) return okPage(Array.from({ length: 100 }, (_, i) => mkRow(200 - i, "2026-08-05T00:00:00Z")));
+    return okPage([]);
+  };
+  const lg = await run(`
+    ssoChars = [${REC}];
+    const out = await syncAllWalletTx();
+    return { ids: out.ledger.map(x => x.transactionId) };
+  `, { fetch: legacyStub, store: legacyStore });
+  check("a legacy scalar gap marker is still resumed", lg.ids.includes(200) && lg.ids.includes(101));
+  const legacyGapsAfter = JSON.parse(legacyStore["myOrders.walletSyncGaps"]);
+  check("legacy marker is cleared (not left behind in scalar form) once resolved",
+        legacyGapsAfter["11"] === undefined);
+
+  // ── 8. Token refresh failing between the recent walk and the backfill must
+  // not crash the sync (backfill === null) — the recent walk's rows must
+  // still be kept and persisted, and the old gap must stay tracked to retry.
+  const nullBackfillStore = { "myOrders.walletSyncGaps": JSON.stringify({ 11: [201] }) };
+  let callCount = 0;
+  const nullBackfillStub = async (url) => {
+    const u = String(url);
+    if (!u.includes("/wallet/transactions")) return notOk();
+    callCount++;
+    const from = fromIdOf(u);
+    if (from === null) return okPage([mkRow(300, "2026-08-25T00:00:00Z")]);
+    return okPage([]);   // would succeed IF reached — the token dies first
+  };
+  const nb = await run(`
+    ssoChars = [${REC}];
+    // Simulate the refresh token dying right after the "recent" walk grabs a
+    // token but before the backfill call re-checks expiry.
+    const origGetTokenFor = getAccessTokenFor;
+    let calls = 0;
+    getAccessTokenFor = async (rec) => { calls++; return calls === 1 ? "tok" : null; };
+    let threw = false;
+    let out;
+    try { out = await syncAllWalletTx(); } catch { threw = true; }
+    getAccessTokenFor = origGetTokenFor;
+    return { threw, warnings: out?.warnings ?? [], ledgerN: out?.ledger.length ?? -1 };
+  `, { fetch: nullBackfillStub, store: nullBackfillStore });
+  check("a token failure mid-sync (backfill === null) does not throw", nb.threw === false);
+  check("the recent walk's rows are still kept when the backfill fails to even start",
+        nb.ledgerN === 1);
+  check("a session-expired-mid-sync warning is raised instead of a crash",
+        nb.warnings.some(w => /session expired mid-sync/.test(w)));
+  const gapsAfterNullBackfill = JSON.parse(nullBackfillStore["myOrders.walletSyncGaps"]);
+  check("the unresolved gap marker is kept (not lost) so it can retry next time",
+        JSON.stringify(gapsAfterNullBackfill["11"]) === "[201]");
+
+  // ── 9. fetchWalletTxPages exposes whether it reached ESI's true end of
+  // history (empty page) vs a known-row overlap — syncAllWalletTx's
+  // gap-vs-clean-end distinction depends on this.
+  const endOfHistory = await run(`
+    const rec = ${REC};
+    const clean = await fetchWalletTxPages(rec, new Set());          // first-ever sync, no overlap possible
+    return { complete: clean.complete, reachedEndOfEsiHistory: clean.reachedEndOfEsiHistory };
+  `, { fetch: async () => okPage([]) });
+  check("an empty first page reports reachedEndOfEsiHistory: true",
+        endOfHistory.complete === true && endOfHistory.reachedEndOfEsiHistory === true);
+  const overlapEnd = await run(`
+    const rec = ${REC};
+    const res = await fetchWalletTxPages(rec, new Set(["11:300"]));  // page's only row already known
+    return { complete: res.complete, reachedEndOfEsiHistory: res.reachedEndOfEsiHistory };
+  `, { fetch: async () => okPage([mkRow(300, "2026-08-10T00:00:00Z")]) });
+  check("an overlap stop reports reachedEndOfEsiHistory: false",
+        overlapEnd.complete === true && overlapEnd.reachedEndOfEsiHistory === false);
 
   summary("wallet-sync");
 })();

@@ -234,5 +234,37 @@ function doc() {
   check("stale filter selection resets to All once its option disappears", r8.rows === 2);
   check("reset filter select shows 'All Characters' selected again", r8.selectHtml.includes('value="">All Characters<'));
 
+  // ── Cost-basis modal footer must match the table's Avg Cost exactly, even
+  // when a partial sell sits between two buys (where naively re-averaging the
+  // listed buys' raw quantities disagrees with the running weighted average).
+  const d9 = doc();
+  const r9 = await run(`
+    ssoChars = [{ characterId: 11, characterName: "Alpha", scopes: [] }];
+    ordersState = {
+      loadedAt: Date.now(), warnings: [], names: {}, orders: [],
+      // Buy 10@100, sell 5 (doesn't clear), buy 10@200 →
+      // units 10/1000 → sell 5 at avg100 → 5/500 → buy 10@200 → 15/2500 → avg 166.666...
+      basis: { 34: { unitsOnHand: 15, totalCost: 2500, avgCost: 2500 / 15, partial: false } },
+      ledger: [
+        { transactionId: 1, date: "2026-08-01", typeId: 34, quantity: 10, unitPrice: 100,
+          isBuy: true, characterId: 11, isPersonal: true, locationId: 60003760 },
+        { transactionId: 2, date: "2026-08-02", typeId: 34, quantity: 5, unitPrice: 999,
+          isBuy: false, characterId: 11, isPersonal: true, locationId: 60003760 },
+        { transactionId: 3, date: "2026-08-03", typeId: 34, quantity: 10, unitPrice: 200,
+          isBuy: true, characterId: 11, isPersonal: true, locationId: 60003760 },
+      ],
+      books: {}, typeNames: { 34: "Tritanium" },
+    };
+    await openCostBasisDetail(34);
+    return { modalBody: document.getElementById("cost-basis-modal-body").innerHTML };
+  `, {
+    document: d9,
+    fetch: async () => ({ ok: false, status: 404, json: async () => null, headers: { get: () => "1" } }),
+  });
+  check("both contributing buys are listed (partial sell doesn't clear the position)",
+        (r9.modalBody.match(/<tr>/g) || []).length === 2);
+  check("modal footer shows the SAME weighted average as the table (166.67), not a naive re-average (150)",
+        r9.modalBody.includes("166.67") && !r9.modalBody.includes(">150<"));
+
   summary("orders-render");
 })();
