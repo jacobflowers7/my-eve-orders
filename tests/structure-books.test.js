@@ -150,5 +150,23 @@ const page2 = [
   check("missing scope still surfaces a warning", r5.warnings.length === 1);
   check("missing scope warns to log in again", r5.warnings[0].includes("log in again"));
 
+  // ── A PUBLIC structure is served by both feeds. If NO character can read it
+  // directly (missing scope, or a 5xx) but the public region feed already put
+  // its orders in regionBooks, vs Best % is populated from that — there is
+  // nothing to warn about, and warning anyway would send the user chasing a
+  // re-login that fixes nothing they can see.
+  const r6 = await run(`
+    ssoChars = [{ characterId: 11, characterName: "Alpha", clientId: "c", accessToken: "t",
+                  expiresAt: Date.now() + 3600_000, scopes: [] }];   // no structure-market scope
+    const orders = [{ order_id: 10, type_id: 2929, location_id: 1_111_111_111_111, region_id: 10000047, characterId: 11 }];
+    const regionBooks = { 10000047: { 2929: {
+      sell: [ { price: 4300000, remain: 54, locationId: 1_111_111_111_111, orderId: 11 } ],   // already public
+      buy: [],
+    } } };
+    return { warnings: await fetchStructureBooksInto(regionBooks, orders) };
+  `, { fetch: async () => ({ ok: true, headers: { get: () => "1" }, json: async () => page1 }) });
+  check("no warning when the public feed already covers this structure's book",
+        r6.warnings.length === 0);
+
   summary("structure-books");
 })();

@@ -46,5 +46,60 @@ const { run, check, summary } = require("./harness");
   check("failed type yields empty books, not crash", JSON.stringify(r.failed) === '{"sell":[],"buy":[]}');
   check("character orders walk X-Pages", r.nOrders === 2 && JSON.stringify(r.orderIds) === "[100,200]");
   check("orders annotated with character", r.annotated === true);
+
+  const hdr = { get: h => (String(h).includes("X-Pages") ? "1" : String(h).includes("Remain") ? "100" : "0") };
+
+  // A network exception on ANY page must resolve to null, not throw — a
+  // thrown rejection here would escape fetchAllCharacterOrders' Promise.all
+  // and abort the whole refresh, discarding every other character's orders.
+  const throwRec = await run(`
+    ESI_RETRY_MIN_DELAY_MS = 0;
+    const rec = { clientId: "c", accessToken: "tok", refreshToken: "r",
+                  expiresAt: Date.now() + 3600e3, characterId: 11, characterName: "Alpha",
+                  scopes: ORDERS_SCOPES };
+    let threw = false;
+    let result;
+    try { result = await fetchCharacterOrders(rec); } catch { threw = true; }
+    return { threw, result };
+  `, { fetch: async () => { throw new TypeError("Failed to fetch"); } });
+  check("a network exception resolves to null instead of throwing",
+        throwRec.threw === false && throwRec.result === null);
+
+  // A malformed body (JSON parse failure) is not something esiFetchRetry's own
+  // fetch()-level catch absorbs — it must still resolve to null, not throw and
+  // take the rest of Promise.all down with it.
+  const badJsonRec = await run(`
+    ESI_RETRY_MIN_DELAY_MS = 0;
+    const rec = { clientId: "c", accessToken: "tok", refreshToken: "r",
+                  expiresAt: Date.now() + 3600e3, characterId: 11, characterName: "Alpha",
+                  scopes: ORDERS_SCOPES };
+    let threw = false;
+    let result;
+    try { result = await fetchCharacterOrders(rec); } catch { threw = true; }
+    return { threw, result };
+  `, { fetch: async () => ({ ok: true, headers: { get: h => h === "X-Pages" ? "1" : "100" },
+                             json: async () => { throw new SyntaxError("Unexpected end of JSON input"); } }) });
+  check("a malformed JSON body resolves to null instead of throwing",
+        badJsonRec.threw === false && badJsonRec.result === null);
+
+  // A failed later page must not silently truncate the order list — that
+  // would read exactly like orders had filled or expired.
+  const page2FailRec = await run(`
+    ESI_RETRY_MIN_DELAY_MS = 0;
+    const rec = { clientId: "c", accessToken: "tok", refreshToken: "r",
+                  expiresAt: Date.now() + 3600e3, characterId: 11, characterName: "Alpha",
+                  scopes: ORDERS_SCOPES };
+    return await fetchCharacterOrders(rec);
+  `, {
+    fetch: async (url) => {
+      const page = Number(String(url).match(/page=(\d+)/)?.[1] ?? 1);
+      if (page === 1) return { ok: true, headers: { get: h => h === "X-Pages" ? "2" : "100" }, json: async () =>
+        [{ order_id: 100, type_id: 34, price: 5, volume_remain: 10, volume_total: 10,
+           is_buy_order: false, location_id: 60003760, region_id: 10000002 }] };
+      return { ok: false, status: 502, headers: hdr, json: async () => null };
+    },
+  });
+  check("a failed later page returns null instead of a truncated order list",
+        page2FailRec === null);
   summary("orders-fetch");
 })();

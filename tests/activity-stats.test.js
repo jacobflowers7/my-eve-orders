@@ -74,7 +74,23 @@ const OFF = { opts: "{ includeCorpSells: false }" };
         d.today.fills === 1 && near(d.today.profit, 200 * 0.934 - 100));
   check("zero-quantity rows are skipped", d.today.revenue === 200);
 
-  // ── E. fmtIskSigned ────────────────────────────────────────────────────────
+  // ── E. Self-trade neutrality ────────────────────────────────────────────────
+  // Two of the user's own characters trading with each other share
+  // transaction_id — must count as no fill at all, not a real sale.
+  const selfTradeRows = [
+    { key: "11:900", characterId: 11, transactionId: 900, typeId: 60, quantity: 100,
+      unitPrice: 10, isBuy: false, date: "2026-09-02T01:00:00Z", isPersonal: true },
+    { key: "22:900", characterId: 22, transactionId: 900, typeId: 60, quantity: 100,
+      unitPrice: 10, isBuy: true, date: "2026-09-02T01:00:00Z", isPersonal: true },
+  ];
+  const st = await run(`
+    return computeActivityStats(${JSON.stringify(selfTradeRows)},
+      { brokerFee: 0.03, salesTax: 0.036 }, ${NOW}, {});
+  `);
+  check("a self-trade between two of the user's own characters is not counted as a fill",
+        st.today.fills === 0 && st.today.revenue === 0 && st.today.profit === 0);
+
+  // ── F. fmtIskSigned ────────────────────────────────────────────────────────
   const f = await run(`return [fmtIskSigned(6.24e9), fmtIskSigned(-347200), fmtIskSigned(0)];`);
   check("fmtIskSigned formats sign + magnitude",
         f[0] === "6.24 B" && f[1] === "−347.2 K" && f[2] === "0");

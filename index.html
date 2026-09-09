@@ -346,21 +346,21 @@
     <table id="orders-table" style="display:none">
     <thead>
       <tr>
-        <th onclick="setOrdersSort('character')">Char<br><span id="orders-filter-character" onclick="event.stopPropagation()"></span></th>
-        <th onclick="setOrdersSort('name')">Item</th>
-        <th onclick="setOrdersSort('station')">Station<br><span id="orders-filter-station" onclick="event.stopPropagation()"></span></th>
-        <th class="col-num" onclick="setOrdersSort('qty')" title="Volume remaining / total">Qty</th>
-        <th class="col-num" onclick="setOrdersSort('price')">Your Price</th>
-        <th class="col-num" onclick="setOrdersSort('avgCost')" title="Weighted-average price paid, pooled across all characters">Avg Cost</th>
-        <th class="col-num" onclick="setOrdersSort('ref')" title="Jita 4-4 sell price — 5% volume-weighted percentile of the sell book, so single-unit troll orders don't set it. Falls back to the buy side only when nothing is for sale at all.">Jita Ref</th>
-        <th class="col-num" onclick="setOrdersSort('vsJita')" title="Your current posted price vs the Jita reference, right now — (price − ref) / ref × 100. Positive = priced above Jita. No cost-basis needed, so this stays populated even when Margin % is n/a.">vs Jita %</th>
-        <th class="col-num" onclick="setOrdersSort('vsBest')" title="Your price vs the BEST live offer on your own side (lowest sell / highest buy) at this exact station right now. Green 0.0% means nobody has beaten you — you hold the best price or are tied for it; &quot;solo&quot; means nobody else is even listed there. ANY red value means a rival is ahead of you, however small: sells read positive (how far above the cheapest you are), buys negative (how far below the top bid), and an undercut too fine to show at one decimal reads &quot;&lt;0.1%&quot; rather than rounding to zero. Blank only when the station's book can't be read at all.">vs Best %<br><span id="orders-filter-vsbest" onclick="event.stopPropagation()"></span></th>
+        <th data-sort-key="character" onclick="setOrdersSort('character')">Char<br><span id="orders-filter-character" onclick="event.stopPropagation()"></span></th>
+        <th data-sort-key="name" onclick="setOrdersSort('name')">Item</th>
+        <th data-sort-key="station" onclick="setOrdersSort('station')">Station<br><span id="orders-filter-station" onclick="event.stopPropagation()"></span></th>
+        <th class="col-num" data-sort-key="qty" onclick="setOrdersSort('qty')" title="Volume remaining / total">Qty</th>
+        <th class="col-num" data-sort-key="price" onclick="setOrdersSort('price')">Your Price</th>
+        <th class="col-num" data-sort-key="avgCost" onclick="setOrdersSort('avgCost')" title="Weighted-average price paid, pooled across all characters">Avg Cost</th>
+        <th class="col-num" data-sort-key="ref" onclick="setOrdersSort('ref')" title="Jita 4-4 sell price — 5% volume-weighted percentile of the sell book, so single-unit troll orders don't set it. Falls back to the buy side only when nothing is for sale at all.">Jita Ref</th>
+        <th class="col-num" data-sort-key="vsJita" onclick="setOrdersSort('vsJita')" title="Your current posted price vs the Jita reference, right now — (price − ref) / ref × 100. Positive = priced above Jita. No cost-basis needed, so this stays populated even when Margin % is n/a.">vs Jita %</th>
+        <th class="col-num" data-sort-key="vsBest" onclick="setOrdersSort('vsBest')" title="Your price vs the BEST live offer on your own side (lowest sell / highest buy) at this exact station right now. Green 0.0% means nobody has beaten you — you hold the best price or are tied for it; &quot;solo&quot; means nobody else is even listed there. ANY red value means a rival is ahead of you, however small: sells read positive (how far above the cheapest you are), buys negative (how far below the top bid), and an undercut too fine to show at one decimal reads &quot;&lt;0.1%&quot; rather than rounding to zero. Blank only when the station's book can't be read at all.">vs Best %<br><span id="orders-filter-vsbest" onclick="event.stopPropagation()"></span></th>
         <th class="col-num" title="Per-item markup % — blank uses the global rule">Markup %</th>
-        <th class="col-num" onclick="setOrdersSort('target')" title="Ref × (1±markup). Click a value to copy it">Target</th>
-        <th class="col-num" onclick="setOrdersSort('delta')" title="Target − your price: the amount to adjust your price by to hit Target. Click to copy">Δ Price</th>
-        <th class="col-num sort-desc" onclick="setOrdersSort('impact')" title="|Δ| × qty — how much ISK is at stake in repricing this order">Impact</th>
-        <th class="col-num" onclick="setOrdersSort('margin')" title="Sells: net proceeds vs avg cost. Buys: % under Jita ref">Margin %</th>
-        <th class="col-num" onclick="setOrdersSort('estProfit')" title="Sells only: (net proceeds − avg cost) × qty remaining. Requires a known cost basis, so this is blank wherever Margin % is n/a.">Est. Profit</th>
+        <th class="col-num" data-sort-key="target" onclick="setOrdersSort('target')" title="Ref × (1±markup). Click a value to copy it">Target</th>
+        <th class="col-num" data-sort-key="delta" onclick="setOrdersSort('delta')" title="Target − your price: the amount to adjust your price by to hit Target. Click to copy">Δ Price</th>
+        <th class="col-num" data-sort-key="impact" onclick="setOrdersSort('impact')" title="|Δ| × qty — how much ISK is at stake in repricing this order">Impact</th>
+        <th class="col-num" data-sort-key="margin" onclick="setOrdersSort('margin')" title="Sells: net proceeds vs avg cost. Buys: % under Jita ref">Margin %</th>
+        <th class="col-num" data-sort-key="estProfit" onclick="setOrdersSort('estProfit')" title="Sells only: (net proceeds − avg cost) × qty remaining. Requires a known cost basis, so this is blank wherever Margin % is n/a.">Est. Profit</th>
       </tr>
     </thead>
     <tbody id="orders-tbody"></tbody>
@@ -511,7 +511,31 @@ function loadSsoChars() {
 }
 
 
+// EVE rotates each character's refresh token on every use (see the note above
+// getAccessTokenFor) — the previous token becomes invalid the instant a new
+// one is issued. With more than one tab open, a plain overwrite from a tab
+// holding a stale copy of some OTHER tab's just-rotated character can
+// silently clobber that rotation, killing a session that was actually
+// healthy. Re-reading storage immediately before writing and, for any
+// character both sides already agree belongs in the roster, keeping whichever
+// side's record is more recently issued (a rotated/refreshed token always
+// expires later than the one it replaced) closes that race without a
+// persistent storage-event listener. This does not reconcile which
+// CHARACTERS are logged in across tabs — a login or logout in one tab still
+// needs that tab's own save to reach disk; it only protects a character both
+// tabs already agree on from having its token clobbered by a stale copy.
 function saveSsoChars() {
+  let onDiskChars = [];
+  try { onDiskChars = JSON.parse(localStorage.getItem("myOrders.ssoChars"))?.chars ?? []; } catch {}
+  const onDiskById = new Map(onDiskChars.map(c => [c.characterId, c]));
+  for (let i = 0; i < ssoChars.length; i++) {
+    const c = ssoChars[i];
+    const disk = onDiskById.get(c.characterId);
+    if (disk && (disk.expiresAt ?? 0) > (c.expiresAt ?? 0)) {
+      ssoChars[i] = disk;             // another tab's more recently issued token wins
+      if (sso === c) sso = disk;      // keep the active-character reference in sync
+    }
+  }
   try { localStorage.setItem("myOrders.ssoChars", JSON.stringify({ chars: ssoChars, active: activeSsoIdx })); } catch {}
 }
 
@@ -999,6 +1023,14 @@ function fmt(n) {
   return n.toLocaleString("en-US", { maximumFractionDigits: 0 });
 }
 
+// ISK unit prices: whole numbers above 1,000 (where two decimals of precision
+// on a multi-digit price are noise), two decimals below it (where they can be
+// the whole story — e.g. a 4.5 ISK Tritanium buy would otherwise round to 5,
+// which is neither what's on screen elsewhere nor what a copy would send).
+// Shared by the orders table and the cost-basis detail modal so the same
+// price never renders two different ways in two places.
+const money = n => n >= 1000 ? fmt(n) : n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+
 
 // Output is used inside HTML attributes (title="…", value="…") with
 // player-controlled structure names, so quotes must be escaped too.
@@ -1196,12 +1228,16 @@ async function fetchWalletTxPages(rec, knownKeys, resumeFromId = null) {
       return { rows: collected, complete: false, stoppedAtId: fromId };
     }
     if (!Array.isArray(page) || page.length === 0)
-      return { rows: collected, complete: true, stoppedAtId: null };   // end of history
+      // End of what ESI serves for this from_id. Flagged distinctly from the
+      // overlap-stop below: this walk never actually touched a known row, so
+      // the caller can't yet tell "genuinely no more history" from "ESI's
+      // rolling window has moved past history we already knew about".
+      return { rows: collected, complete: true, stoppedAtId: null, reachedEndOfEsiHistory: true };
     const rows = page.map(t => normalizeWalletTx(rec.characterId, t));
     const fresh = rows.filter(x => !knownKeys.has(x.key));
     collected.push(...fresh);
     if (fresh.length < rows.length)
-      return { rows: collected, complete: true, stoppedAtId: null };   // contiguous with ledger
+      return { rows: collected, complete: true, stoppedAtId: null, reachedEndOfEsiHistory: false };   // contiguous with ledger
     fromId = Math.min(...rows.map(x => x.transactionId));
   }
   return { rows: collected, complete: false, stoppedAtId: fromId };    // guard cap — treat as a gap
@@ -1224,27 +1260,56 @@ async function syncAllWalletTx() {
       warnings.push(`${rec.characterName}: missing wallet scope — log in again`);
       continue;
     }
+    const hadPriorHistory = existing.some(r => r.characterId === rec.characterId);
+
     const recent = await fetchWalletTxPages(rec, knownKeys);
     if (recent === null) { warnings.push(`${rec.characterName}: session expired — log in again`); continue; }
     recent.rows.forEach(r => knownKeys.add(r.key));
     incoming = incoming.concat(recent.rows);
 
-    let stillIncomplete = !recent.complete;
-    let stopAt = recent.complete ? null : recent.stoppedAtId;
+    // gaps[characterId] holds every still-open resume point for this
+    // character, oldest boundary first — usually 0 or 1 entries, but a walk
+    // can open a SECOND, disjoint gap (new failure above an older resume
+    // point still marked below) before the older one is ever closed; a single
+    // scalar marker would silently drop whichever one wasn't just touched.
+    // Normalize a legacy single-number marker (pre-array format) into the
+    // array form.
+    const priorGaps = gaps[rec.characterId];
+    const openGaps = priorGaps == null ? [] : Array.isArray(priorGaps) ? priorGaps : [priorGaps];
+    const stillOpen = [];
 
-    // A previously-interrupted sync left a gap below some point — resume it,
-    // independently of whatever the "recent" walk above just did. Only runs when
-    // a marker exists, so the healthy common case costs zero extra ESI calls.
-    const priorGap = gaps[rec.characterId];
-    if (priorGap !== undefined) {
-      const backfill = await fetchWalletTxPages(rec, knownKeys, priorGap);
-      backfill.rows.forEach(r => knownKeys.add(r.key));
-      incoming = incoming.concat(backfill.rows);
-      if (!backfill.complete) { stillIncomplete = true; stopAt = backfill.stoppedAtId; }
+    if (!recent.complete) {
+      stillOpen.push(recent.stoppedAtId);
+    } else if (recent.reachedEndOfEsiHistory && hadPriorHistory) {
+      // The walk ran clean to ESI's true end-of-history without ever
+      // overlapping a row we already had — but this character DID have older
+      // rows on record. ESI's rolling transaction window has very likely
+      // moved past them: there is nothing left to backfill (ESI itself no
+      // longer serves it), so this is surfaced as an honest warning rather
+      // than silently trusting "complete" and losing the gap without a trace.
+      warnings.push(`${rec.characterName}: wallet history gap — ESI's transaction history no longer ` +
+                     `reaches back to your last sync; some older cost-basis history may be unavailable`);
     }
 
-    if (stillIncomplete) {
-      gaps[rec.characterId] = stopAt;
+    // Resume EVERY open gap, not just the newest — a failure while resuming
+    // one must not cost the app its memory of another still-open one.
+    for (const g of openGaps) {
+      const backfill = await fetchWalletTxPages(rec, knownKeys, g);
+      if (backfill === null) {
+        // Token refresh failed partway through this sync — keep the marker
+        // and warn, exactly like a failed walk, instead of crashing on
+        // `backfill.rows` and losing every row this whole sync collected.
+        stillOpen.push(g);
+        warnings.push(`${rec.characterName}: session expired mid-sync — will resume older history next time`);
+        continue;
+      }
+      backfill.rows.forEach(r => knownKeys.add(r.key));
+      incoming = incoming.concat(backfill.rows);
+      if (!backfill.complete) stillOpen.push(backfill.stoppedAtId);
+    }
+
+    if (stillOpen.length) {
+      gaps[rec.characterId] = stillOpen;
       warnings.push(`${rec.characterName}: wallet sync incomplete — will resume older history next time`);
     } else {
       delete gaps[rec.characterId];
@@ -1278,9 +1343,40 @@ async function syncAllWalletTx() {
 let includeCorpBuys = false;
 const basisEligibleTx = r => includeCorpBuys || r.isPersonal !== false;
 
+// A trade between two of the user's own logged-in characters (contract, corp
+// hangar move done via the market, or a deliberate alt-to-alt sale) produces
+// one buy row and one sell row that share transaction_id but carry different
+// characterIds (see the comment on walletTxKey). No ISK or units actually
+// leave the pooled trader in that case, so folding both rows in as a real
+// external buy+sell would re-mark the whole pooled average to the transfer
+// price and, in the activity engine, count the transfer as a realized fill.
+// Both rows are dropped before either engine sees them. Only personal-side
+// pairs are stripped — a corp-funded leg is left to basisEligibleTx/the
+// corp-buys toggle, since that is a real corp↔personal stock movement, not a
+// no-op transfer between two of the user's own wallets.
+function stripSelfTrades(rows) {
+  const byTx = new Map();
+  for (const r of rows) {
+    if (!byTx.has(r.transactionId)) byTx.set(r.transactionId, []);
+    byTx.get(r.transactionId).push(r);
+  }
+  const selfTradeKeys = new Set();
+  for (const group of byTx.values()) {
+    const buy  = group.find(r => r.isBuy);
+    const sell = group.find(r => !r.isBuy);
+    if (buy && sell && buy.characterId !== sell.characterId &&
+        buy.quantity === sell.quantity &&
+        buy.isPersonal !== false && sell.isPersonal !== false) {
+      selfTradeKeys.add(buy.key);
+      selfTradeKeys.add(sell.key);
+    }
+  }
+  return selfTradeKeys.size ? rows.filter(r => !selfTradeKeys.has(r.key)) : rows;
+}
+
 
 function computeCostBasis(rows) {
-  const personal = rows.filter(basisEligibleTx);
+  const personal = stripSelfTrades(rows).filter(basisEligibleTx);
   const sorted = [...personal].sort((a, b) =>
     a.date < b.date ? -1 : a.date > b.date ? 1 : a.transactionId - b.transactionId);
   const basis = {};
@@ -1291,14 +1387,24 @@ function computeCostBasis(rows) {
       b.unitsOnHand += r.quantity;
       b.totalCost   += r.quantity * r.unitPrice;
     } else {
-      if (r.quantity > b.unitsOnHand) b.partial = true;
+      const oversold = r.quantity > b.unitsOnHand;
+      if (oversold) b.partial = true;
       const sold = Math.min(r.quantity, b.unitsOnHand);
       if (sold > 0) {
         const avg = b.totalCost / b.unitsOnHand;
         b.totalCost   -= avg * sold;
         b.unitsOnHand -= sold;
       }
-      if (b.unitsOnHand === 0) b.totalCost = 0;   // avoid float dust accumulating
+      if (b.unitsOnHand === 0) {
+        b.totalCost = 0;   // avoid float dust accumulating
+        // A CLEAN sellout to zero (this sell did not itself oversell) means the
+        // average from this point on is exact again — carrying `partial`
+        // forward would permanently suppress Margin %/Est. Profit for a type
+        // whose current position has a fully known cost, just because the
+        // ledger started mid-history long ago. An oversold step that also
+        // lands on zero stays partial — that step is itself the ambiguous one.
+        if (!oversold) b.partial = false;
+      }
     }
   }
   // Types with only sells recorded carry no priceable history — drop them to Unknown.
@@ -1330,7 +1436,7 @@ function computeActivityStats(rows, fees, nowMs, { includeCorpSells = true } = {
   const week  = { fills: 0, revenue: 0, profit: 0, profitPartial: false };
 
   const state = {};   // typeId → running { unitsOnHand, totalCost }, mirroring computeCostBasis
-  const sorted = [...rows].sort((a, b) =>
+  const sorted = [...stripSelfTrades(rows)].sort((a, b) =>
     a.date < b.date ? -1 : a.date > b.date ? 1 : a.transactionId - b.transactionId);
 
   for (const r of sorted) {
@@ -1372,7 +1478,7 @@ function computeActivityStats(rows, fees, nowMs, { includeCorpSells = true } = {
 // point have zero influence on today's average and showing them would imply
 // a lineage that doesn't exist. Mirrors that reset exactly, one type at a time.
 function contributingBuys(rows, typeId) {
-  const sorted = rows
+  const sorted = stripSelfTrades(rows)
     .filter(r => r.typeId === typeId && basisEligibleTx(r) && r.quantity > 0)
     .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : a.transactionId - b.transactionId);
 
@@ -1553,6 +1659,18 @@ async function fetchStructureBooksInto(regionBooks, orders) {
       }
       return;                                          // loaded — don't burn requests on the rest
     }
+    // A PUBLIC structure's orders already arrive via the region feed
+    // (fetchRegionBooksForPairs), independently of whether any of our
+    // characters can read the structure directly — so if the authenticated
+    // read above failed but the public feed already populated this exact
+    // structure's book for one of our types, vs Best % is populated and there
+    // is nothing to warn about.
+    const alreadyPublic = [...typeIds].some(typeId => {
+      const out = regionBooks[regionId]?.[typeId];
+      return out && (out.sell.some(o => o.locationId === structureId) ||
+                     out.buy.some(o => o.locationId === structureId));
+    });
+    if (alreadyPublic) return;
     const missingScope = characterIds
       .map(id => ssoChars.find(c => c.characterId === id))
       .filter(rec => rec && !charHasScope(rec, MARKET_STRUCTURE_SCOPE));
@@ -1602,17 +1720,29 @@ async function fetchCharacterOrders(rec) {
   const token = await getAccessTokenFor(rec);
   if (!token) return null;
   const auth = { headers: { Authorization: `Bearer ${token}` } };
-  const first = await fetch(
-    `${ESI}/characters/${rec.characterId}/orders/?datasource=tranquility&page=1`, auth);
-  if (!first.ok) return null;
-  const pages = parseInt(first.headers.get("X-Pages") || "1");
-  let rows = await first.json();
-  for (let p = 2; p <= pages; p++) {
-    const r = await fetch(
-      `${ESI}/characters/${rec.characterId}/orders/?datasource=tranquility&page=${p}`, auth);
-    if (r.ok) rows = rows.concat(await r.json());
+  try {
+    const first = await esiFetchRetry(
+      `${ESI}/characters/${rec.characterId}/orders/?datasource=tranquility&page=1`, { init: auth });
+    if (!first?.ok) return null;
+    const pages = parseInt(first.headers.get("X-Pages") || "1");
+    let rows = await first.json();
+    for (let p = 2; p <= pages; p++) {
+      const r = await esiFetchRetry(
+        `${ESI}/characters/${rec.characterId}/orders/?datasource=tranquility&page=${p}`, { init: auth });
+      // A failed later page would otherwise silently truncate the order list —
+      // reading exactly like orders had filled or expired. Treat it the same
+      // as a failed first page instead of returning a partial, misleading set.
+      if (!r?.ok) return null;
+      rows = rows.concat(await r.json());
+    }
+    return rows.map(o => ({ ...o, characterId: rec.characterId, characterName: rec.characterName }));
+  } catch {
+    // A network/parse exception here must never escape into the Promise.all in
+    // fetchAllCharacterOrders — one character's failure would otherwise reject
+    // the whole refresh, discarding every other character's already-fetched
+    // orders and the wallet-ledger sync running alongside it.
+    return null;
   }
-  return rows.map(o => ({ ...o, characterId: rec.characterId, characterName: rec.characterName }));
 }
 
 
@@ -1871,7 +2001,13 @@ async function openCostBasisDetail(typeId) {
   if (gen !== costBasisDetailGen) return;  // superseded by a newer open, or closed
 
   const totalQty = buys.reduce((s, r) => s + r.quantity, 0);
-  const totalIsk = buys.reduce((s, r) => s + r.quantity * r.unitPrice, 0);
+  // Sourced from the SAME basis entry the table's Avg Cost cell reads — not
+  // recomputed from these rows' raw quantities, which can exceed what's
+  // actually on hand when a partial sell has happened since one of them
+  // without fully clearing the position (see contributingBuys).  Recomputing
+  // it here would silently disagree with the number this modal was opened to
+  // explain.
+  const avgCost = ordersState.basis[typeId]?.avgCost ?? null;
   const rows = buys.map(r => {
     const charName = ssoChars.find(c => c.characterId === r.characterId)?.characterName ?? `Character ${r.characterId}`;
     const corpTag = r.isPersonal === false
@@ -1884,7 +2020,7 @@ async function openCostBasisDetail(typeId) {
       <td style="padding:4px 8px;font-size:11px">${escHtml(charName)}${corpTag}</td>
       <td style="padding:4px 8px;font-size:11px;white-space:normal">${escHtml(station)}</td>
       <td style="padding:4px 8px;font-size:11px;text-align:right">${fmt(r.quantity)}</td>
-      <td style="padding:4px 8px;font-size:11px;text-align:right">${fmt(r.unitPrice)}</td>
+      <td style="padding:4px 8px;font-size:11px;text-align:right">${money(r.unitPrice)}</td>
     </tr>`;
   }).join("");
   body.innerHTML = `<table style="width:100%;border-collapse:collapse">
@@ -1897,9 +2033,9 @@ async function openCostBasisDetail(typeId) {
     </tr></thead>
     <tbody>${rows}</tbody>
     <tfoot><tr style="border-top:1px solid var(--border);font-size:11px">
-      <td colspan="3" style="padding:4px 8px">Weighted average</td>
+      <td colspan="3" style="padding:4px 8px" title="Sum of the quantities listed above — can exceed what's currently on hand if a partial sell happened without fully clearing the position">Total bought (still contributing)</td>
       <td style="padding:4px 8px;text-align:right">${fmt(totalQty)}</td>
-      <td style="padding:4px 8px;text-align:right">${fmt(totalIsk / totalQty)}</td>
+      <td style="padding:4px 8px;text-align:right" title="Current weighted-average cost — the same number shown in the Avg Cost column">${avgCost != null ? money(avgCost) : "—"}</td>
     </tr></tfoot>
   </table>`;
 }
@@ -2042,6 +2178,15 @@ function renderOrdersTable() {
   if (!tbody) return;
   const msg = document.getElementById("msg");
 
+  // The sort indicator (▲/▼) is derived from state on every render rather than
+  // baked into the markup — otherwise it never follows the actual sort key
+  // once the user clicks a different header.
+  document.querySelectorAll("th[data-sort-key]").forEach(th => {
+    const active = th.dataset?.sortKey === ordersSortKey;
+    th.classList.toggle("sort-asc",  active && ordersSortAsc);
+    th.classList.toggle("sort-desc", active && !ordersSortAsc);
+  });
+
   const rules = loadOrderRules();   // read once — used for the input default and every row
   const gm = document.getElementById("orders-global-markup");
   if (gm && gm.value === "") gm.value = rules.globalPct;
@@ -2131,7 +2276,6 @@ function renderOrdersTable() {
     return;
   }
 
-  const money = n => n >= 1000 ? fmt(n) : n.toLocaleString("en-US", { maximumFractionDigits: 2 });
   tbody.innerHTML = rows.map(r => {
     const { o } = r;
     const override = rules.perItem[o.type_id];

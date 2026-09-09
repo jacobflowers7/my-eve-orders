@@ -78,6 +78,31 @@ const row = (txId, date, typeId, qty, price, isBuy) =>
         includeCorpBuys = false;   // don't leak into the assertions above on re-run
         return out;
       })(),
+      // A clean sellout to zero AFTER a partial (mid-history) position clears
+      // the flag: from here the average is exact again.
+      resetAfterPartial: computeCostBasis([
+        row(1, "2026-08-01", 44, 500, 10, false),   // sell-before-any-buy: partial, clamp to 0
+        row(2, "2026-08-02", 44, 200, 8, true),
+        row(3, "2026-08-03", 44, 200, 99, false),   // clean sellout: not oversold, clears to 0
+        row(4, "2026-08-04", 44, 100, 12, true),
+      ])[44],
+      // An oversell that ALSO happens to land on zero in the same step must
+      // stay partial — that step is itself the ambiguous one.
+      oversellThenReset: computeCostBasis([
+        row(1, "2026-08-01", 45, 100, 10, true),
+        row(2, "2026-08-02", 45, 150, 12, false),   // oversells, clamps to 0 in the same step
+      ])[45],
+      // Self-trade: two of the user's own characters trading with each other
+      // share transaction_id — must be a no-op on the pooled average, not a
+      // real external buy+sell re-marking it to the transfer price.
+      selfTrade: computeCostBasis([
+        { key: "11:1", characterId: 11, transactionId: 1, date: "2026-08-01", typeId: 46,
+          quantity: 100, unitPrice: 5, isBuy: true, isPersonal: true },
+        { key: "11:2", characterId: 11, transactionId: 2, date: "2026-08-02", typeId: 46,
+          quantity: 100, unitPrice: 10, isBuy: false, isPersonal: true },   // A sells 100@10 to B
+        { key: "22:2", characterId: 22, transactionId: 2, date: "2026-08-02", typeId: 46,
+          quantity: 100, unitPrice: 10, isBuy: true, isPersonal: true },
+      ])[46],
     };
   `);
 
@@ -85,6 +110,12 @@ const row = (txId, date, typeId, qty, price, isBuy) =>
   check("sell removes at avg, later buy re-averages", r.sellAtAvg.unitsOnHand === 2000 && r.sellAtAvg.avgCost === 7);
   check("sell-before-buy flags partial", r.partial.partial === true && r.partial.unitsOnHand === 200 && r.partial.avgCost === 8);
   check("oversell clamps to zero, avg null", r.oversell.unitsOnHand === 0 && r.oversell.avgCost === null && r.oversell.partial === true);
+  check("a clean sellout after a partial position clears the flag",
+        r.resetAfterPartial.partial === false && r.resetAfterPartial.unitsOnHand === 100 && r.resetAfterPartial.avgCost === 12);
+  check("an oversell landing on zero in the same step stays partial",
+        r.oversellThenReset.partial === true && r.oversellThenReset.unitsOnHand === 0);
+  check("a self-trade between two of the user's own characters is a no-op on the pooled average",
+        r.selfTrade.unitsOnHand === 100 && r.selfTrade.avgCost === 5);
   check("sell-only type with no buy history: absent from result", r.sellOnlyNoBuy === true);
   check("no buy history → absent (Unknown)", r.unknown === true);
   check("unsorted input handled: sell after buy empties cleanly", r.unsorted.unitsOnHand === 0 && r.unsorted.partial === false);

@@ -167,5 +167,50 @@ function jwt(payload) {
   check("setActiveSsoChar updates activeSsoIdx to match", r6.activeIdx === 2);
   check("setActiveSsoChar persists the new active index", r6.persistedActive === 2);
 
+  // ── 7) Cross-tab token-rotation race: EVE rotates refresh tokens on every
+  // use, so a stale in-memory copy of a character held by another "tab" must
+  // never clobber a token that has since been rotated and persisted.
+  const raceStore = {};
+  const OLD_EXPIRES = Date.now() + 100_000;
+  const NEW_EXPIRES = Date.now() + 1_200_000;
+  // "Tab A": loads, rotates the character's token (simulating a successful
+  // refresh), saves.
+  await run(`
+    localStorage.setItem("myOrders.ssoChars", JSON.stringify({
+      chars: [{ characterId: 99, characterName: "Xander", clientId: "c",
+                accessToken: "old-token", refreshToken: "old-refresh",
+                expiresAt: ${OLD_EXPIRES}, scopes: [] }],
+      active: 0,
+    }));
+    loadSsoChars();
+    ssoChars[0].accessToken  = "new-token";
+    ssoChars[0].refreshToken = "new-refresh";
+    ssoChars[0].expiresAt    = ${NEW_EXPIRES};
+    saveSsoChars();
+  `, { store: raceStore });
+
+  // "Tab B": already had the character's STALE pre-rotation copy resident in
+  // memory (loaded before Tab A's rotation) as its ACTIVE character, then
+  // saves for an unrelated reason.
+  const tabB = await run(`
+    ssoChars = [{ characterId: 99, characterName: "Xander", clientId: "c",
+                  accessToken: "old-token", refreshToken: "old-refresh",
+                  expiresAt: ${OLD_EXPIRES}, scopes: [] }];
+    activeSsoIdx = 0;
+    sso = ssoChars[0];
+    saveSsoChars();
+    return { arrayToken: ssoChars[0].accessToken, arrayExpires: ssoChars[0].expiresAt,
+             activeToken: sso.accessToken };
+  `, { store: raceStore });
+
+  check("tab B's own roster entry is repaired to the rotated token, not left stale",
+        tabB.arrayToken === "new-token" && tabB.arrayExpires === NEW_EXPIRES);
+  check("tab B's active 'sso' reference is repaired too, not left pointing at the superseded record",
+        tabB.activeToken === "new-token");
+  const onDisk = JSON.parse(raceStore["myOrders.ssoChars"]);
+  const xOnDisk = onDisk.chars.find(c => c.characterId === 99);
+  check("the rotated token survives tab B's save instead of being clobbered by the stale copy",
+        xOnDisk.accessToken === "new-token" && xOnDisk.expiresAt === NEW_EXPIRES);
+
   summary("sso-multichar");
 })();
