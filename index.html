@@ -331,6 +331,8 @@
   <button id="orders-refresh-btn" onclick="refreshOrders()" class="tab-btn" style="border-color:var(--teal);color:var(--teal)">↻ Refresh Orders</button>
   <button id="orders-export-btn" onclick="exportOrdersToExcel()" class="tab-btn" style="border-color:var(--gold);color:var(--gold)"
           title="Excel workbook with live formulas — Target/Delta/Impact/Margin recompute if you edit the Global Markup %, Broker Fee %, or Sales Tax % cells">⬇ Export to Excel</button>
+  <button id="purchase-history-btn" onclick="openPurchaseHistory()" class="tab-btn" style="border-color:var(--teal);color:var(--teal)"
+          title="EVE only serves a rolling window of wallet transactions, roughly 30-90 days, and then the purchases behind your cost basis are gone for good. This cache keeps them — view it, back it up to a file, or restore it.">Purchase History</button>
   <div class="control-group">
     <label title="Default markup over the Jita reference; per-item overrides win. Sells target ref×(1+markup), buys ref×(1−markup).">Global Markup %</label>
     <input type="number" id="orders-global-markup" step="1" style="width:70px"
@@ -375,6 +377,19 @@
   </div>
   <p style="color:var(--text-dim);font-size:11px;line-height:1.5;flex:0 0 auto">Avg Cost is a weighted average, not one order. These are the buys still contributing to it — everything since this item's position last fully sold out to zero.</p>
   <div id="cost-basis-modal-body" style="overflow:auto;flex:1 1 auto;min-height:0"></div>
+</div>
+
+<div id="purchase-history-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1001;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:20px;width:1040px;max-width:95vw;max-height:88vh;flex-direction:column;gap:12px">
+  <div style="display:flex;justify-content:space-between;align-items:center;flex:0 0 auto">
+    <span style="color:var(--gold);font-size:13px;font-weight:600;letter-spacing:0.5px;text-transform:uppercase">Purchase History Cache</span>
+    <button onclick="closePurchaseHistory()" style="background:none;border:none;color:var(--text-dim);font-size:16px;cursor:pointer;line-height:1">✕</button>
+  </div>
+  <p style="color:var(--text-dim);font-size:11px;line-height:1.5;flex:0 0 auto">EVE only serves a rolling window of wallet transactions — roughly 30–90 days — and once a purchase ages out, the history behind your cost basis is gone for good. This cache is the durable copy. Export it to a file so it survives a browser wipe, a new machine, or a new profile.</p>
+  <div id="purchase-history-summary" style="flex:0 0 auto"></div>
+  <div id="purchase-history-filters" style="flex:0 0 auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap"></div>
+  <div id="purchase-history-actions" style="flex:0 0 auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap"></div>
+  <div id="purchase-history-body" style="overflow:auto;flex:1 1 auto;min-height:0"></div>
+  <input type="file" id="purchase-history-file" accept=".json,.xlsx,.xls" style="display:none" onchange="handlePurchaseHistoryFile(this)" />
 </div>
 
 <script id="xlsx-lib">
@@ -592,7 +607,10 @@ function saveCorpBuysSetting() {
   try { localStorage.setItem(CORP_BUYS_KEY, includeCorpBuys ? "1" : "0"); } catch {}
   // The ledger already holds the corp rows — only the fold over it changes,
   // so recompute in place rather than making the user hit Refresh.
-  ordersState.basis = computeCostBasis(ordersState.ledger);
+  // Same fallback as a refresh applies, so flipping the toggle doesn't
+  // silently drop recovered averages for items with no live purchase history.
+  ordersState.basis = applyCostBaseline(computeCostBasis(ordersState.ledger),
+                                        ordersState.baseline ?? [], ordersState.typeNames);
   renderOrdersTable();
 }
 
@@ -1042,14 +1060,26 @@ function escHtml(s) {
 
 // ── IndexedDB persistence (last scan survives a page refresh) ───────────────
 // Order books are far too big for localStorage; IndexedDB fits them fine.
-const IDB_NAME = "myOrders", IDB_TX_STORE = "walletTx";
+const IDB_NAME = "myOrders", IDB_TX_STORE = "walletTx", IDB_BASELINE_STORE = "costBaseline";
+// v2 adds costBaseline: average costs recovered from older spreadsheets, kept
+// as a fallback for items whose own purchase history has aged out of ESI.
+const IDB_VERSION = 2;
 
 
 function idbOpen() {
   return new Promise(res => {
     if (typeof indexedDB === "undefined") return res(null);
-    const rq = indexedDB.open(IDB_NAME, 1);
-    rq.onupgradeneeded = () => { rq.result.createObjectStore(IDB_TX_STORE, { keyPath: "key" }); };
+    const rq = indexedDB.open(IDB_NAME, IDB_VERSION);
+    // Fires on first create AND on every upgrade, so each store is created only
+    // when missing — creating an existing store name throws and would leave a
+    // v1 database permanently unopenable.
+    rq.onupgradeneeded = () => {
+      const db = rq.result;
+      if (!db.objectStoreNames.contains(IDB_TX_STORE))
+        db.createObjectStore(IDB_TX_STORE, { keyPath: "key" });
+      if (!db.objectStoreNames.contains(IDB_BASELINE_STORE))
+        db.createObjectStore(IDB_BASELINE_STORE, { keyPath: "key" });
+    };
     // onversionchange: close ourselves if another tab needs to upgrade, so we
     // never become the blocker. onblocked: another context holds the old
     // version open — without this handler neither onsuccess nor onerror ever
@@ -1098,27 +1128,306 @@ function mergeWalletTx(existing, incoming) {
 }
 
 
-async function idbTxPutMany(rows) {
+async function idbStorePutMany(storeName, rows) {
   const db = await idbOpen();
   if (!db) return;
   return new Promise(res => {
-    const tx = db.transaction(IDB_TX_STORE, "readwrite");
-    rows.forEach(r => tx.objectStore(IDB_TX_STORE).put(r)); // put = idempotent on key
+    const tx = db.transaction(storeName, "readwrite");
+    rows.forEach(r => tx.objectStore(storeName).put(r)); // put = idempotent on key
     tx.oncomplete = () => { db.close(); res(); };
     tx.onerror    = () => { db.close(); res(); };
   });
 }
 
 
-async function idbTxAll() {
+async function idbStoreAll(storeName) {
   const db = await idbOpen();
   if (!db) return [];
   return new Promise(res => {
-    const tx = db.transaction(IDB_TX_STORE, "readonly");
-    const rq = tx.objectStore(IDB_TX_STORE).getAll();
+    const tx = db.transaction(storeName, "readonly");
+    const rq = tx.objectStore(storeName).getAll();
     rq.onsuccess = () => { db.close(); res(rq.result ?? []); };
     rq.onerror   = () => { db.close(); res([]); };
   });
+}
+
+
+async function idbTxPutMany(rows)       { return idbStorePutMany(IDB_TX_STORE, rows); }
+async function idbTxAll()               { return idbStoreAll(IDB_TX_STORE); }
+async function idbBaselinePutMany(rows) { return idbStorePutMany(IDB_BASELINE_STORE, rows); }
+async function idbBaselineAll()         { return idbStoreAll(IDB_BASELINE_STORE); }
+
+
+// ── Purchase-history cache ───────────────────────────────────────────────────
+// ESI serves only a rolling window of wallet transactions — roughly 30–90 days,
+// after which EVE's own history is gone for good. The walletTx store above is
+// the durable copy that outlives that window, but it lives inside a single
+// browser profile: clearing site data, a new machine, or a different browser
+// wipes it, and anything older than EVE's window is then unrecoverable. So the
+// cache can be written out to a file and read back in, and older spreadsheets
+// can seed average costs the ledger has since lost.
+
+const PH_FORMAT = "my-orders-purchase-history";
+const PH_VERSION = 1;
+
+// Baseline records are keyed by item NAME, not type id: an old spreadsheet only
+// carries names, and resolving them to ids would mean a network round trip on
+// every import. Cost basis is pooled across characters anyway, so the name is
+// the right grain. Matching ignores case and surrounding whitespace.
+function costBaselineKey(typeName) { return String(typeName ?? "").trim().toLowerCase(); }
+
+
+function purchaseHistoryStats(rows) {
+  const byChar = new Map();
+  const seen = new Set();
+  let count = 0, buys = 0, sells = 0, oldest = null, newest = null;
+  for (const r of rows ?? []) {
+    if (r?.key == null) continue;
+    if (seen.has(r.key)) continue;   // defensive: `put` dedupes, but a merge may not have run
+    seen.add(r.key);
+    count++;
+    if (r.isBuy) buys++; else sells++;
+    const t = Date.parse(r.date);
+    if (Number.isFinite(t)) {
+      if (oldest === null || t < oldest) oldest = t;
+      if (newest === null || t > newest) newest = t;
+    }
+    const c = byChar.get(r.characterId) ?? { characterId: r.characterId, count: 0, buys: 0, sells: 0 };
+    c.count++;
+    if (r.isBuy) c.buys++; else c.sells++;
+    byChar.set(r.characterId, c);
+  }
+  return { count, buys, sells, oldest, newest,
+           characters: [...byChar.values()].sort((a, b) => b.count - a.count) };
+}
+
+
+function buildPurchaseHistoryExport(rows, charNames = {}, exportedAt = null, baseline = []) {
+  return {
+    format: PH_FORMAT,
+    version: PH_VERSION,
+    exportedAt: exportedAt ?? new Date().toISOString(),
+    count: (rows ?? []).length,
+    characters: charNames,
+    costBaseline: baseline ?? [],
+    transactions: (rows ?? []).map(r => ({
+      key: r.key, characterId: r.characterId, transactionId: r.transactionId,
+      date: r.date, typeId: r.typeId, quantity: r.quantity, unitPrice: r.unitPrice,
+      isBuy: r.isBuy, locationId: r.locationId, isPersonal: r.isPersonal ?? null,
+    })),
+  };
+}
+
+
+// Import is deliberately strict: a malformed row is skipped and counted rather
+// than half-accepted, because one transaction with a wrong quantity or price
+// silently poisons every cost basis and profit figure it feeds.
+function parsePurchaseHistoryImport(payload) {
+  const fail = msg => ({ rows: [], baseline: [], errors: [msg], skipped: 0 });
+  if (!payload || typeof payload !== "object" || Array.isArray(payload))
+    return fail("That file isn't a purchase-history export (expected a JSON object).");
+  if (payload.format !== PH_FORMAT)
+    return fail(`Unrecognized file — expected format "${PH_FORMAT}".`);
+  if (!Array.isArray(payload.transactions))
+    return fail("That file has no 'transactions' list, so there is nothing to import.");
+
+  const rows = [], baseline = [];
+  let skipped = 0;
+  for (const raw of payload.transactions) {
+    if (!raw || typeof raw !== "object") { skipped++; continue; }
+    const characterId   = Number(raw.characterId ?? raw.character_id);
+    const transactionId = Number(raw.transactionId ?? raw.transaction_id);
+    const typeId        = Number(raw.typeId ?? raw.type_id);
+    const quantity      = Number(raw.quantity);
+    const unitPrice     = Number(raw.unitPrice ?? raw.unit_price);
+    const date          = raw.date;
+    const valid = Number.isFinite(characterId) && Number.isFinite(transactionId) &&
+      Number.isFinite(typeId) && Number.isFinite(quantity) && quantity > 0 &&
+      Number.isFinite(unitPrice) && typeof date === "string" && Number.isFinite(Date.parse(date));
+    if (!valid) { skipped++; continue; }
+    rows.push({
+      key: walletTxKey(characterId, transactionId),
+      characterId, transactionId, date, typeId, quantity, unitPrice,
+      isBuy: raw.isBuy === true || raw.is_buy === true,
+      locationId: Number(raw.locationId ?? raw.location_id) || 0,
+      // Absent means "assume personal" downstream (see basisEligibleTx) — only an
+      // explicit false marks a corp-funded row.
+      isPersonal: raw.isPersonal === false ? false
+                : (raw.isPersonal === true || raw.is_personal === true ? true : undefined),
+    });
+  }
+  for (const b of Array.isArray(payload.costBaseline) ? payload.costBaseline : []) {
+    if (!b || typeof b !== "object") continue;
+    const key = typeof b.key === "string" && b.key ? b.key : costBaselineKey(b.typeName);
+    const avgCost = Number(b.avgCost);
+    if (!key || !Number.isFinite(avgCost) || avgCost <= 0) continue;
+    baseline.push({ key, typeName: b.typeName ?? key, avgCost,
+                    asOf: b.asOf ?? null, source: b.source ?? null });
+  }
+  return { rows, baseline, errors: [], skipped };
+}
+
+
+// Readable columns first; the three IDs that make the sheet round-trip
+// losslessly back into the cache are tucked onto the end.
+const PH_SHEET_HEADER = ["Date", "Character", "Item", "Side", "Qty", "Unit Price", "Total",
+                         "Location", "Location ID", "Character ID", "Type ID", "Transaction ID", "Corp-funded"];
+
+
+function buildPurchaseHistorySheet(rows, { typeNames = {}, locationNames = {}, charNames = {} } = {}) {
+  const aoa = [PH_SHEET_HEADER.slice()];
+  const sorted = [...(rows ?? [])].sort((a, b) =>
+    a.date < b.date ? 1 : a.date > b.date ? -1 : b.transactionId - a.transactionId);   // newest first
+  for (const r of sorted) {
+    aoa.push([
+      r.date,
+      charNames[r.characterId] ?? `Character ${r.characterId}`,
+      typeNames[r.typeId] ?? `Type ${r.typeId}`,
+      r.isBuy ? "Buy" : "Sell",
+      r.quantity,
+      r.unitPrice,
+      r.quantity * r.unitPrice,
+      locationNames[r.locationId] ?? `Location ${r.locationId}`,
+      // The name alone can't be turned back into an id on the way in, so the id
+      // rides along — otherwise every station reads as "Location 0" on restore.
+      r.locationId ?? 0,
+      r.characterId,
+      r.typeId,
+      r.transactionId,
+      r.isPersonal === false ? "yes" : "",
+    ]);
+  }
+  return aoa;
+}
+
+
+// Excel hands dates back either as strings or as serial numbers depending on how
+// the cell was written and read, so accept both. A row whose date can't be
+// parsed is useless to a cost engine that replays transactions in order, so it
+// is skipped rather than stored as Invalid Date.
+function phParseDate(v) {
+  if (v == null || v === "") return null;
+  if (typeof v === "number" && Number.isFinite(v)) {
+    // Excel's 1900 epoch, including its fictitious Feb 29 1900 leap day.
+    const ms = Date.UTC(1899, 11, 30) + v * 86400e3;
+    return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+  }
+  const t = Date.parse(String(v));
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
+
+function parsePurchaseHistorySheet(aoa) {
+  const empty = { rows: [], skipped: 0 };
+  if (!Array.isArray(aoa) || !aoa.length) return empty;
+  let h = -1;
+  for (let i = 0; i < aoa.length; i++) {
+    if (Array.isArray(aoa[i]) && aoa[i].some(c => String(c ?? "").trim() === "Transaction ID")) { h = i; break; }
+  }
+  if (h === -1) return empty;   // not a purchase-history sheet at all
+  const header = aoa[h].map(c => String(c ?? "").trim());
+  const at = name => header.indexOf(name);
+  const iDate = at("Date"), iSide = at("Side"), iQty = at("Qty"), iPrice = at("Unit Price"),
+        iLocId = at("Location ID"), iCharId = at("Character ID"), iTypeId = at("Type ID"),
+        iTxId = at("Transaction ID"), iCorp = at("Corp-funded");
+  if (iTxId === -1 || iTypeId === -1) return empty;
+
+  const rows = [];
+  let skipped = 0;
+  for (let i = h + 1; i < aoa.length; i++) {
+    const row = aoa[i];
+    if (!Array.isArray(row) || !row.length) continue;
+    // A trailing blank row is normal in a spreadsheet, not a malformed record —
+    // dropping it here keeps the "N skipped" count honest.
+    if (row.every(c => c === "" || c == null)) continue;
+    const transactionId = Number(row[iTxId]);
+    const typeId        = Number(row[iTypeId]);
+    const quantity      = Number(row[iQty]);
+    const unitPrice     = Number(row[iPrice]);
+    const date          = phParseDate(row[iDate]);
+    const side          = String(row[iSide] ?? "").trim().toLowerCase();
+    if (!Number.isFinite(transactionId) || !Number.isFinite(typeId) ||
+        !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(unitPrice) ||
+        !date || (side !== "buy" && side !== "sell")) { skipped++; continue; }
+    // A sheet written before Character ID existed still round-trips: fall back to
+    // 0 so the row keeps a stable key instead of being dropped entirely.
+    let characterId = Number(row[iCharId]);
+    if (!Number.isFinite(characterId)) characterId = 0;
+    rows.push({
+      key: walletTxKey(characterId, transactionId),
+      characterId, transactionId, date, typeId, quantity, unitPrice,
+      isBuy: side === "buy",
+      locationId: Number(row[iLocId]) || 0,
+      isPersonal: String(row[iCorp] ?? "").trim().toLowerCase() === "yes" ? false : undefined,
+    });
+  }
+  return { rows, skipped };
+}
+
+
+// An old "My Orders" export holds no purchases — it's a snapshot of open orders
+// — but its Avg Cost column is exactly the history that has since aged out of
+// ESI. Recovering it as a baseline keeps cost basis, Margin % and Est. Profit
+// working for those items instead of collapsing to n/a.
+function parseCostBaselineFromOrders(aoa, asOf = null) {
+  if (!Array.isArray(aoa) || !aoa.length) return [];
+  let h = -1;
+  for (let i = 0; i < Math.min(aoa.length, 12); i++) {   // the header is always near the top
+    const row = aoa[i];
+    if (!Array.isArray(row)) continue;
+    const cells = row.map(c => String(c ?? "").trim());
+    if (cells.includes("Item") && cells.includes("Avg Cost")) { h = i; break; }
+  }
+  if (h === -1) return [];
+  const header = aoa[h].map(c => String(c ?? "").trim());
+  const iItem = header.indexOf("Item"), iAvg = header.indexOf("Avg Cost");
+  const stamp = asOf ?? new Date().toISOString();
+  const out = new Map();
+  for (let i = h + 1; i < aoa.length; i++) {
+    const row = aoa[i];
+    if (!Array.isArray(row)) continue;
+    const typeName = String(row[iItem] ?? "").trim();
+    const avgCost = Number(row[iAvg]);
+    // A blank Avg Cost is the normal case for an item bought before the tool was
+    // in use — there's simply nothing to recover, so it isn't an error.
+    if (!typeName || !Number.isFinite(avgCost) || avgCost <= 0) continue;
+    const key = costBaselineKey(typeName);
+    // Later rows win: one item usually appears on several characters in the same
+    // sheet, and re-importing a newer file overwrites with newer numbers.
+    out.set(key, { key, typeName, avgCost, asOf: stamp, source: "excel-import" });
+  }
+  return [...out.values()];
+}
+
+
+// Fills in avgCost for types the ledger can no longer price, using a recovered
+// baseline. Only types with NO usable average are touched — a real ledger
+// average always beats an imported figure.
+function applyCostBaseline(basis, baseline, typeNames) {
+  const out = {};
+  for (const [t, b] of Object.entries(basis ?? {})) out[t] = { ...b };
+  if (!baseline?.length) return out;
+  const byName = new Map();
+  for (const b of baseline) {
+    if (!b) continue;
+    byName.set(b.key ?? costBaselineKey(b.typeName), b);
+  }
+  for (const tid of Object.keys(out)) {
+    const b = out[tid];
+    if (b.avgCost != null) continue;      // real history already covers this type
+    const name = typeNames?.[tid];
+    if (!name) continue;                  // can't match a name we don't have
+    const bl = byName.get(costBaselineKey(name));
+    if (!bl || !(Number(bl.avgCost) > 0)) continue;
+    b.avgCost = Number(bl.avgCost);
+    b.fromBaseline = true;
+    b.baselineAsOf = bl.asOf ?? null;
+    // Deliberately not flagged partial: the number is an approximation, but it's
+    // the best figure available and suppressing Margin %/Est. Profit for it
+    // would defeat the point of recovering it. The UI badges it as imported.
+    b.partial = false;
+  }
+  return out;
 }
 
 
@@ -1834,7 +2143,7 @@ function deriveOrderRow(order, basisEntry, ref, rules, fees, bestRef, soloAtStat
 
 
 // ── My Orders: state, orchestration, render ──────────────────────────────────
-let ordersState = { orders: [], basis: {}, books: {}, regionBooks: {}, names: {}, typeNames: {}, warnings: [], loadedAt: null, ledger: [] };
+let ordersState = { orders: [], basis: {}, baseline: [], books: {}, regionBooks: {}, names: {}, typeNames: {}, warnings: [], loadedAt: null, ledger: [] };
 
 let ordersSortKey = "impact", ordersSortAsc = false;
 
@@ -1893,14 +2202,19 @@ async function refreshOrders() {
       resolveIds(typeIds),
     ]);
     const names = Object.assign(locationNames, typeNameIds);
+    const typeNames = Object.fromEntries(typeIds.map(t => [t, names[t] ?? `Type ${t}`]));
+    const baseline = await idbBaselineAll();
     ordersState = {
       orders,
-      basis: computeCostBasis(ledger),
+      // A recovered average only fills types the ledger can no longer price —
+      // real purchase history always wins (see applyCostBaseline).
+      basis: applyCostBaseline(computeCostBasis(ledger), baseline, typeNames),
+      baseline,
       ledger,
       books,
       regionBooks: region.regionBooks,
       names,
-      typeNames: Object.fromEntries(typeIds.map(t => [t, names[t] ?? `Type ${t}`])),
+      typeNames,
       warnings: [...ow, ...ww, ...region.warnings],
       loadedAt: Date.now(),
     };
@@ -2047,6 +2361,304 @@ function closeCostBasisDetail() {
 }
 
 
+// ── Purchase History: view, back up, and restore the cache ───────────────────
+let phState = { rows: [], charFilter: "all", sideFilter: "all", query: "", sortDesc: true };
+let phRenderGen = 0;
+
+const phCharName = id =>
+  ssoChars.find(c => c.characterId === id)?.characterName ?? `Character ${id}`;
+
+
+function closePurchaseHistory() {
+  phRenderGen++;   // discard any in-flight render for the closed panel
+  document.getElementById("purchase-history-modal").style.display = "none";
+}
+
+
+async function openPurchaseHistory() {
+  const modal = document.getElementById("purchase-history-modal");
+  if (!modal) return;
+  const gen = ++phRenderGen;
+  modal.style.display = "flex";
+  document.getElementById("purchase-history-body").innerHTML =
+    `<p style="color:var(--text-dim);font-size:11px">Loading cached history…</p>`;
+
+  const rows = await idbTxAll();
+  if (gen !== phRenderGen) return;
+  phState.rows = rows;
+
+  // History holds items and stations the orders table never resolves, because
+  // that only looks up types it currently has open orders for.
+  const typeIds = [...new Set(rows.map(r => r.typeId))].filter(t => Number.isFinite(t) && !ordersState.typeNames[t]);
+  const locIds  = [...new Set(rows.map(r => r.locationId))].filter(l => l && !ordersState.names[l]);
+  try {
+    const [typeNames, locNames] = await Promise.all([
+      typeIds.length ? resolveIds(typeIds) : {},
+      locIds.length ? resolveLocationNames(rows.map(r => ({ locationId: r.locationId, characterId: r.characterId }))) : {},
+    ]);
+    if (gen !== phRenderGen) return;
+    if (typeNames) ordersState.typeNames = Object.assign({}, ordersState.typeNames, typeNames);
+    if (locNames)  ordersState.names     = Object.assign({}, ordersState.names, locNames);
+  } catch { /* names are cosmetic — the history still renders with raw ids */ }
+
+  renderPurchaseHistory();
+}
+
+
+function phFilteredRows() {
+  const q = phState.query.trim().toLowerCase();
+  const rows = phState.rows.filter(r => {
+    if (phState.charFilter !== "all" && String(r.characterId) !== phState.charFilter) return false;
+    if (phState.sideFilter === "buy"  && !r.isBuy) return false;
+    if (phState.sideFilter === "sell" &&  r.isBuy) return false;
+    if (!q) return true;
+    const name = ordersState.typeNames[r.typeId] ?? `Type ${r.typeId}`;
+    const haystack = `${name} ${phCharName(r.characterId)} ${ordersState.names[r.locationId] ?? ""}`.toLowerCase();
+    return haystack.includes(q);
+  });
+  const dir = phState.sortDesc ? -1 : 1;
+  return rows.sort((a, b) => {
+    const ta = Date.parse(a.date) || 0, tb = Date.parse(b.date) || 0;
+    return (tb - ta) * dir || (b.transactionId - a.transactionId) * dir;
+  });
+}
+
+
+function phFormatDate(v) {
+  const t = typeof v === "number" ? v : Date.parse(v);
+  if (!Number.isFinite(t)) return "—";
+  return new Date(t).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+}
+
+
+function renderPurchaseHistory() {
+  const summary = document.getElementById("purchase-history-summary");
+  const filters = document.getElementById("purchase-history-filters");
+  const actions = document.getElementById("purchase-history-actions");
+  if (!summary || !filters || !actions) return;
+
+  const stats = purchaseHistoryStats(phState.rows);
+  const shown = phFilteredRows();
+
+  let gaps = {};
+  try { gaps = JSON.parse(localStorage.getItem("myOrders.walletSyncGaps") ?? "{}") ?? {}; } catch { gaps = {}; }
+  const gapCount = Object.values(gaps).filter(v => Array.isArray(v) ? v.length : v != null).length;
+
+  const warn = [];
+  if (!stats.count) warn.push("Nothing cached yet — click <strong>Refresh Orders</strong> to start recording purchases.");
+  if (gapCount) warn.push(`${gapCount} character(s) have an unfinished history walk from an interrupted sync — refresh to resume it.`);
+  if (stats.oldest != null && Date.now() - stats.oldest > 90 * 86400e3)
+    warn.push(`Oldest cached purchase is ${phFormatDate(stats.oldest)} — older than EVE's own window, so this cache is the only copy that exists. Export a backup.`);
+  else if (stats.count) warn.push("Export a backup: this cache lives in this browser only, and anything older than EVE's window cannot be re-fetched.");
+
+  const spanDays = stats.oldest != null && stats.newest != null
+    ? Math.max(1, Math.round((stats.newest - stats.oldest) / 86400e3)) : 0;
+
+  summary.innerHTML = `
+    <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:baseline">
+      <span><strong style="color:var(--gold);font-size:15px">${fmt(stats.count)}</strong> <span style="color:var(--text-dim);font-size:11px">transactions cached</span></span>
+      <span style="color:var(--text-dim);font-size:11px">${fmt(stats.buys)} buys · ${fmt(stats.sells)} sells</span>
+      <span style="color:var(--text-dim);font-size:11px">${phFormatDate(stats.oldest)} → ${phFormatDate(stats.newest)}${spanDays ? ` (${fmt(spanDays)} days)` : ""}</span>
+    </div>
+    <div style="margin-top:4px;color:var(--text-dim);font-size:11px">${stats.characters.map(c => `${escHtml(phCharName(c.characterId))}: ${fmt(c.count)}`).join(" · ") || "—"}</div>
+    ${warn.length ? `<div style="margin-top:6px;color:#e0a040;font-size:11px">${warn.join("<br>")}</div>` : ""}`;
+
+  const charOpts = [`<option value="all">All characters</option>`].concat(
+    stats.characters.map(c => `<option value="${c.characterId}"${String(c.characterId) === phState.charFilter ? " selected" : ""}>${escHtml(phCharName(c.characterId))} (${c.count})</option>`)).join("");
+  const sideOpts = [["all", "Both sides"], ["buy", "Buys only"], ["sell", "Sells only"]]
+    .map(([v, l]) => `<option value="${v}"${phState.sideFilter === v ? " selected" : ""}>${l}</option>`).join("");
+
+  filters.innerHTML = `
+    <select onchange="setPhFilter('char', this.value)">${charOpts}</select>
+    <select onchange="setPhFilter('side', this.value)">${sideOpts}</select>
+    <input type="search" placeholder="Filter by item, character, or station…" value="${escHtml(phState.query)}"
+           oninput="setPhFilter('query', this.value)" style="width:260px" />
+    <button class="tab-btn" onclick="setPhFilter('sort', null)">${phState.sortDesc ? "Newest first" : "Oldest first"}</button>
+    <span id="ph-showing" style="color:var(--text-dim);font-size:11px;margin-left:auto">Showing ${fmt(shown.length)} of ${fmt(stats.count)}</span>`;
+
+  actions.innerHTML = `
+    <button class="tab-btn" style="border-color:var(--gold);color:var(--gold)" onclick="exportPurchaseHistoryJson()"
+            title="Download every cached transaction as a JSON file — the only way to get this history back if the browser's storage is cleared">⬇ Backup to JSON</button>
+    <button class="tab-btn" style="border-color:var(--gold);color:var(--gold)" onclick="pickPurchaseHistoryFile()"
+            title="Restore a backup, or recover average costs from an older EVE Orders spreadsheet">⬆ Restore from file</button>
+    <button class="tab-btn" style="border-color:var(--gold);color:var(--gold)" onclick="exportPurchaseHistoryExcel()"
+            title="Write the cached history to its own Excel workbook">⬇ Export to Excel</button>
+    <span style="color:var(--text-dim);font-size:11px">Restore accepts a .json backup, an .xlsx containing a Purchase History sheet, or an older EVE Orders export (to recover its Avg Cost column).</span>`;
+
+  renderPurchaseHistoryBody();
+}
+
+
+// Split from renderPurchaseHistory so typing in the filter box doesn't rebuild
+// the input it is being typed into (which would drop focus on every keystroke).
+function renderPurchaseHistoryBody() {
+  const body = document.getElementById("purchase-history-body");
+  const counter = document.getElementById("ph-showing");
+  if (!body) return;
+  const shown = phFilteredRows();
+  if (counter) counter.textContent = `Showing ${fmt(shown.length)} of ${fmt(phState.rows.length)}`;
+
+  if (!shown.length) {
+    body.innerHTML = `<p style="color:var(--text-dim);font-size:11px">${phState.rows.length ? "Nothing matches those filters." : "No purchases cached yet."}</p>`;
+    return;
+  }
+
+  const rowHtml = shown.map(r => `<tr>
+      <td style="padding:3px 8px;font-size:11px;white-space:nowrap">${escHtml(phFormatDate(r.date))}</td>
+      <td style="padding:3px 8px;font-size:11px;white-space:nowrap">${escHtml(phCharName(r.characterId))}</td>
+      <td style="padding:3px 8px;font-size:11px">${escHtml(ordersState.typeNames[r.typeId] ?? `Type ${r.typeId}`)}</td>
+      <td style="padding:3px 8px;font-size:11px;color:${r.isBuy ? "var(--teal)" : "var(--gold)"}">${r.isBuy ? "Buy" : "Sell"}</td>
+      <td style="padding:3px 8px;font-size:11px;text-align:right">${fmt(r.quantity)}</td>
+      <td style="padding:3px 8px;font-size:11px;text-align:right">${money(r.unitPrice)}</td>
+      <td style="padding:3px 8px;font-size:11px;text-align:right">${fmt(r.quantity * r.unitPrice)}</td>
+      <td style="padding:3px 8px;font-size:11px">${escHtml(ordersState.names[r.locationId] ?? `Location ${r.locationId}`)}</td>
+    </tr>`).join("");
+
+  const th = (label, align = "left") =>
+    `<th style="padding:4px 8px;text-align:${align};position:sticky;top:0;background:var(--bg2);border-bottom:1px solid var(--border)">${label}</th>`;
+
+  body.innerHTML = `<table style="width:100%;border-collapse:collapse">
+    <thead><tr style="color:var(--text-dim);font-size:10px;text-transform:uppercase">
+      ${th("Date")}${th("Character")}${th("Item")}${th("Side")}
+      ${th("Qty", "right")}${th("Unit Price", "right")}${th("Total", "right")}${th("Location")}
+    </tr></thead>
+    <tbody>${rowHtml}</tbody>
+  </table>`;
+}
+
+
+function setPhFilter(kind, value) {
+  if (kind === "char")  phState.charFilter = value;
+  if (kind === "side")  phState.sideFilter = value;
+  if (kind === "sort")  phState.sortDesc = !phState.sortDesc;
+  if (kind === "query") {
+    phState.query = value ?? "";
+    renderPurchaseHistoryBody();   // body only — keeps the text input focused
+    return;
+  }
+  renderPurchaseHistory();
+}
+
+
+function downloadJsonFile(filename, text) {
+  const blob = new Blob([text], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+
+async function exportPurchaseHistoryJson() {
+  const rows = await idbTxAll();
+  if (!rows.length) { alert("No purchase history cached yet — click Refresh Orders to start recording."); return; }
+  const charNames = Object.fromEntries(ssoChars.map(c => [c.characterId, c.characterName]));
+  const payload = buildPurchaseHistoryExport(rows, charNames, new Date().toISOString(), await idbBaselineAll());
+  downloadJsonFile(`eve-purchase-history-${new Date().toISOString().slice(0, 10)}.json`,
+                   JSON.stringify(payload, null, 2));
+}
+
+
+async function exportPurchaseHistoryExcel() {
+  if (typeof XLSX === "undefined") { alert("The Excel export library failed to load."); return; }
+  const rows = await idbTxAll();
+  if (!rows.length) { alert("No purchase history cached yet — click Refresh Orders to start recording."); return; }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, purchaseHistoryWorksheet(rows), "Purchase History");
+  XLSX.writeFile(wb, `eve-purchase-history-${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+
+function pickPurchaseHistoryFile() {
+  document.getElementById("purchase-history-file")?.click();
+}
+
+
+async function handlePurchaseHistoryFile(input) {
+  const file = input.files?.[0];
+  input.value = "";   // so picking the same file again still fires a change event
+  if (!file) return;
+  try {
+    if (/\.json$/i.test(file.name)) {
+      let payload;
+      try { payload = JSON.parse(await file.text()); }
+      catch { alert("That JSON file could not be parsed."); return; }
+      await importPurchaseHistoryRecords(payload, file.name);
+    } else {
+      await importPurchaseHistoryWorkbook(file);
+    }
+  } catch (e) {
+    alert(`Could not import ${file.name}: ${e.message}`);
+  }
+}
+
+
+// Rebuilds cost basis from what's on disk and repaints both the table and the
+// history panel, so an import is visible immediately without a network refresh.
+async function reloadLedgerIntoState() {
+  const { merged } = mergeWalletTx(await idbTxAll(), []);
+  ordersState.ledger = merged;
+  ordersState.baseline = await idbBaselineAll();
+  ordersState.basis = applyCostBaseline(computeCostBasis(merged), ordersState.baseline, ordersState.typeNames);
+  renderOrdersTable();
+  if (document.getElementById("purchase-history-modal")?.style?.display === "flex") await openPurchaseHistory();
+}
+
+
+async function importPurchaseHistoryRecords(payload, label) {
+  const { rows, baseline, errors, skipped } = parsePurchaseHistoryImport(payload);
+  if (errors.length) { alert(errors[0]); return; }
+  if (!rows.length && !baseline.length) { alert(`No usable records found in ${label}.`); return; }
+  if (rows.length)     await idbTxPutMany(rows);
+  if (baseline.length) await idbBaselinePutMany(baseline);
+  await reloadLedgerIntoState();
+  const parts = [];
+  if (rows.length)     parts.push(`${fmt(rows.length)} transaction(s) restored`);
+  if (baseline.length) parts.push(`${fmt(baseline.length)} average cost(s) recovered`);
+  if (skipped)         parts.push(`${fmt(skipped)} malformed row(s) skipped`);
+  alert(`Import complete — ${parts.join(", ")}.`);
+}
+
+
+// Three kinds of workbook are accepted: our own export (round-trips the
+// Purchase History sheet), any sheet carrying Transaction ID columns, and an
+// older EVE Orders export whose Avg Cost column is recovered as a baseline.
+async function importPurchaseHistoryWorkbook(file) {
+  if (typeof XLSX === "undefined") { alert("The Excel export library failed to load."); return; }
+  const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const names = wb.SheetNames ?? [];
+  const aoaOf = n => XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: false, defval: "" });
+
+  let rows = [], skipped = 0;
+  const baselineByName = new Map();
+
+  for (const n of names) {
+    const aoa = aoaOf(n);
+    const res = parsePurchaseHistorySheet(aoa);
+    if (res.rows.length) { rows = rows.concat(res.rows); skipped += res.skipped; }
+    for (const b of parseCostBaselineFromOrders(aoa)) baselineByName.set(b.key, b);
+  }
+
+  const baseline = [...baselineByName.values()];
+  if (!rows.length && !baseline.length) {
+    alert(`No purchase history found in ${file.name}. Expected a sheet with a "Transaction ID" column, or an orders sheet with an "Avg Cost" column.`);
+    return;
+  }
+  if (rows.length)     await idbTxPutMany(rows);
+  if (baseline.length) await idbBaselinePutMany(baseline);
+  await reloadLedgerIntoState();
+  const parts = [];
+  if (rows.length)     parts.push(`${fmt(rows.length)} transaction(s) restored`);
+  if (baseline.length) parts.push(`${fmt(baseline.length)} average cost(s) recovered`);
+  if (skipped)         parts.push(`${fmt(skipped)} unreadable row(s) skipped`);
+  alert(`Import complete — ${parts.join(", ")}.`);
+}
+
+
 // ── My Orders: Excel export ──────────────────────────────────────────────────
 // Pure planning (this section) is fully testable without loading the vendored
 // SheetJS library — only the thin wrapper at the bottom touches XLSX itself.
@@ -2152,7 +2764,12 @@ function buildOrdersExportPlan(rows, rules, fees, typeNames, locationNames) {
 
 function exportOrdersToExcel() {
   if (typeof XLSX === "undefined") { alert("The Excel export library failed to load."); return; }
-  if (!ordersState.orders.length) { alert("No orders to export — refresh orders first."); return; }
+  // Order history alone is still worth exporting: the cached purchases are the
+  // part that can't be re-fetched once EVE's window rolls past them.
+  if (!ordersState.orders.length && !ordersState.ledger?.length) {
+    alert("Nothing to export — refresh orders first.");
+    return;
+  }
   const rules = loadOrderRules();
   const fees = currentFees();
   const rows = ordersState.orders.map(o => orderRowView(o, rules, fees));
@@ -2167,7 +2784,26 @@ function exportOrdersToExcel() {
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "My Orders");
+
+  // Purchase history rides along in every workbook, so the spreadsheets already
+  // being kept double as an off-browser backup — and the sheet carries the ids
+  // needed to read it straight back into the cache.
+  if (ordersState.ledger?.length)
+    XLSX.utils.book_append_sheet(wb, purchaseHistoryWorksheet(ordersState.ledger), "Purchase History");
+
   XLSX.writeFile(wb, `eve-orders-${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+
+// Shared by the main orders export and the history-only export, so both produce
+// an identical sheet (and both stay round-trippable).
+function purchaseHistoryWorksheet(rows) {
+  const charNames = Object.fromEntries(ssoChars.map(c => [c.characterId, c.characterName]));
+  const ws = XLSX.utils.aoa_to_sheet(buildPurchaseHistorySheet(rows, {
+    typeNames: ordersState.typeNames, locationNames: ordersState.names, charNames,
+  }));
+  ws["!cols"] = [22, 15, 28, 6, 10, 12, 14, 34, 12, 12, 10, 14, 11].map(wch => ({ wch }));
+  return ws;
 }
 
 
@@ -2279,8 +2915,12 @@ function renderOrdersTable() {
   tbody.innerHTML = rows.map(r => {
     const { o } = r;
     const override = rules.perItem[o.type_id];
-    const badge = r.basisState === "partial"
-      ? ` <span title="Ledger starts mid-history for this item — average may be wrong, margin suppressed" style="color:#e0a040;font-size:10px">partial</span>` : "";
+    const badge = [
+      r.basisState === "partial"
+        ? ` <span title="Ledger starts mid-history for this item — average may be wrong, margin suppressed" style="color:#e0a040;font-size:10px">partial</span>` : "",
+      ordersState.basis[o.type_id]?.fromBaseline === true
+        ? ` <span title="Average recovered from an imported spreadsheet — the original purchases are older than EVE's own window, so this is the best figure available rather than a live weighted average" style="color:var(--teal);font-size:10px">imported</span>` : "",
+    ].join("");
     const marginCls = r.marginPct == null ? "" : r.marginPct > 0 ? "profit-pos" : "profit-neg";
     const vsJitaCls = r.vsJitaPct == null ? "" : r.vsJitaPct > 0 ? "profit-pos" : "profit-neg";
     // Zero is the good state here, not "neutral": it means nobody has undercut
@@ -2373,7 +3013,7 @@ function renderOrdersTable() {
     th.setAttribute?.("role", "button");
   });
   document.addEventListener?.("keydown", e => {
-    if (e.key === "Escape") { closeCostBasisDetail(); return; }
+    if (e.key === "Escape") { closeCostBasisDetail(); closePurchaseHistory(); return; }
     if (e.key !== "Enter" && e.key !== " ") return;
     if (e.target?.matches?.("th[onclick]")) { e.preventDefault(); e.target.click(); }
   });
@@ -2381,7 +3021,17 @@ function renderOrdersTable() {
   // Activity stats need no network: the ledger is durable in IndexedDB, so the
   // dashboard renders on load. Balances stay "—" until the first refresh.
   const { merged } = mergeWalletTx(await idbTxAll(), []);
-  if (!ordersState.ledger.length) ordersState.ledger = merged;
+  ordersState.baseline = await idbBaselineAll();
+  // Only seed from disk when nothing has been refreshed yet. A refresh computes
+  // its own basis from the ledger it just fetched, and this bootstrap runs
+  // async — recomputing here would overwrite that with the on-disk view.
+  if (!ordersState.ledger.length) {
+    ordersState.ledger = merged;
+    // Recovered averages load with the ledger, so a restored cache prices items
+    // on first paint — no refresh needed to see them.
+    ordersState.basis = applyCostBaseline(computeCostBasis(merged),
+                                          ordersState.baseline, ordersState.typeNames);
+  }
 
   renderOrdersTable();
 })();

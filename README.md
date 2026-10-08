@@ -63,9 +63,32 @@ The **Char** and **Station** column headers each carry a dropdown, populated fro
 
 Average cost is a **weighted average**, not FIFO, pooled across every character you've logged in. This is deliberate: once stock moves between your own characters (contracts, corp hangars), there's no way to trace which specific purchase a given unit of stock came from, so per-lot tracking would be unreliable in exactly the cases it's meant to help with.
 
-The wallet-transaction ledger only has data since you started using this tool (ESI only serves a rolling window of recent transactions, walked backward on each refresh). Items bought before that show cost basis as **n/a** rather than a confidently wrong number.
+The wallet-transaction ledger only has data since you started using this tool (ESI only serves a rolling window of recent transactions, walked backward on each refresh). Items bought before that show cost basis as **n/a** rather than a confidently wrong number — unless a recovered average covers them, in which case they're badged `imported` (see [Purchase History cache](#purchase-history-cache)).
 
 **Corp-funded purchases** (buys paid from a corporation wallet) are excluded from the average by default, since shared corp stock pooled into a personal average would misstate it. If your corp is really just an ISK source — a one-person buying corp whose purchases land in your own hangar — turn on **Count corp-funded buys** in the Cost Basis section and they'll pool in like any personal buy (marked with a `corp` badge in the Avg Cost detail view). The data comes from the character-wallet scope you've already granted; no corp roles or extra scopes are needed, and the toggle takes effect immediately without a refresh.
+
+## Purchase History cache
+
+ESI serves only a **rolling window** of wallet transactions — roughly 30–90 days. After that, EVE's own record of a purchase is gone, and so is the history your cost basis and profit figures are built on.
+
+This tool keeps its own copy. Every refresh walks the transaction feed backward and adds anything new to a local cache, so purchases stay priced long after they age out of EVE.
+
+**The cache lives in your browser only.** Clearing site data, switching browsers, or moving to a new machine wipes it — and anything older than EVE's window can never be re-fetched. So back it up:
+
+- **⬇ Backup to JSON** — downloads every cached transaction as a `.json` file.
+- **⬆ Restore from file** — merges a backup back in. Imports are additive and deduplicated by character + transaction id, so restoring on top of an existing cache (or restoring the same file twice) never double-counts.
+
+Open **Purchase History** next to the Export button to see what's cached: record count, oldest and newest dates, per-character breakdown, and a filterable table. It also warns when a character's history walk is unfinished after an interrupted sync.
+
+### Recovering averages from old spreadsheets
+
+An old `eve-orders-*.xlsx` export holds no purchases — it's a snapshot of open orders — but its **Avg Cost** column is exactly the history that has since aged out. Restoring one recovers those averages as a **baseline**: any item the ledger can no longer price falls back to the recovered figure instead of collapsing to `n/a`, so Margin % and Est. Profit keep working. Rows using a recovered average are badged `imported` in the Avg Cost column, so an approximation is never mistaken for a live weighted average.
+
+A real ledger average always wins — a baseline only ever fills a gap.
+
+### Excel export
+
+The main **⬇ Export to Excel** now includes a **Purchase History** sheet alongside My Orders. It carries the character, type, transaction, and location ids alongside the readable names, so the sheet round-trips: restore that same `.xlsx` later and every purchase comes back. Restoring also accepts any older EVE Orders export for its Avg Cost column.
 
 ## Tests
 
